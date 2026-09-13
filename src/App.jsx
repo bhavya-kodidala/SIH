@@ -2,11 +2,20 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   MapPin, Phone, Users, MoreVertical, Map as MapIcon, FileWarning, Siren,
   Building2, ShieldCheck, X, ChevronRight, ChevronLeft, Plus, Camera, Video,
-  Mic, CheckCircle2, Navigation2, Sun, Moon, Globe, Info, ArrowLeft, Search,
+  Mic, CheckCircle2, Navigation2, Sun, Moon, Globe, Info, Search,
   Star, Trash2, Pencil, Flame, Stethoscope, Car, Waves, Mountain,
   Building, UserX, CloudRain, HelpCircle, Square, Clock, ClipboardList,
-  BadgeCheck, ChevronDown, Volume2, VolumeX, LocateFixed, PhoneCall
+  BadgeCheck, ChevronDown, Volume2, VolumeX, LocateFixed, PhoneCall,
+  Fingerprint, KeyRound, Loader2, ShieldAlert
 } from "lucide-react";
+import {
+  checkUserExists,
+  registerPasskey,
+  loginWithPasskey,
+  isWebAuthnSupported,
+  verifyCurrentSession,
+  logout
+} from "./lib/auth";
 
 /* =========================================================================
    DESIGN TOKENS
@@ -55,8 +64,16 @@ const STRINGS = {
   en: {
     appName: "RakshaNet",
     tagline: "Emergency response, one tap away",
-    phone: "Phone number", sendOtp: "Send OTP", enterOtp: "Enter the code",
-    otpSub: "code sent to", verify: "Verify & continue", resend: "Resend code",
+    phone: "Phone number",
+    passkeyContinue: "Continue with Passkey", passkeyCreate: "Create Passkey",
+    passkeyHint: "Use your device's fingerprint, face recognition, or device PIN.",
+    passkeyCreateHint: "Register this device using fingerprint, face recognition, or device PIN.",
+    newUserLink: "New user? Create Passkey",
+    existingUserLink: "Already registered? Sign in with Passkey",
+    passkeyChecking: "Checking your account…", passkeyCreating: "Creating your passkey…",
+    passkeyVerifying: "Verifying your passkey…", passkeyCreated: "Passkey verified successfully",
+    passkeyUnsupported: "Passkeys are not supported on this device or browser.",
+    invalidPhone: "Enter a valid 10-digit mobile number.",
     fetchingLoc: "Finding your location…", locFound: "Location found",
     manualLoc: "Enter location manually", allowLoc: "Allow location access",
     continueApp: "Continue",
@@ -66,8 +83,16 @@ const STRINGS = {
   },
   te: {
     appName: "RakshaNet", tagline: "అత్యవసర సహాయం, ఒక్క నొక్కుతో",
-    phone: "ఫోన్ నంబర్", sendOtp: "OTP పంపండి", enterOtp: "కోడ్ నమోదు చేయండి",
-    otpSub: "కోడ్ పంపబడింది", verify: "ధృవీకరించి కొనసాగించండి", resend: "మళ్ళీ పంపండి",
+    phone: "ఫోన్ నంబర్",
+    passkeyContinue: "పాస్‌కీతో కొనసాగించండి", passkeyCreate: "పాస్‌కీ సృష్టించండి",
+    passkeyHint: "మీ పరికరం యొక్క ఫింగర్‌ప్రింట్, ఫేస్ రికగ్నిషన్ లేదా PIN ఉపయోగించండి.",
+    passkeyCreateHint: "ఫింగర్‌ప్రింట్, ఫేస్ లేదా PIN తో మీ పరికరాన్ని నమోదు చేయండి.",
+    newUserLink: "కొత్త వినియోగదారులా? పాస్‌కీ సృష్టించండి",
+    existingUserLink: "ఇప్పటికే ఖాతా ఉందా? పాస్‌కీతో లాగిన్ అవ్వండి",
+    passkeyChecking: "మీ ఖాతాను తనిఖీ చేస్తోంది…", passkeyCreating: "పాస్‌కీని సృష్టిస్తోంది…",
+    passkeyVerifying: "పాస్‌కీని ధృవీకరిస్తోంది…", passkeyCreated: "పాస్‌కీ విజయవంతంగా ధృవీకరించబడింది",
+    passkeyUnsupported: "ఈ పరికరం లేదా బ్రౌజర్‌లో పాస్‌కీలు మద్దతు లేవు.",
+    invalidPhone: "సరైన 10-అంకెల మొబైల్ నంబర్ నమోదు చేయండి.",
     fetchingLoc: "మీ లొకేషన్ కనుగొంటోంది…", locFound: "లొకేషన్ దొరికింది",
     manualLoc: "మాన్యువల్‌గా నమోదు చేయండి", allowLoc: "లొకేషన్ యాక్సెస్ ఇవ్వండి",
     continueApp: "కొనసాగించు",
@@ -77,8 +102,16 @@ const STRINGS = {
   },
   hi: {
     appName: "RakshaNet", tagline: "आपातकालीन सहायता, एक टैप में",
-    phone: "फ़ोन नंबर", sendOtp: "OTP भेजें", enterOtp: "कोड दर्ज करें",
-    otpSub: "कोड भेजा गया", verify: "सत्यापित करें", resend: "फिर से भेजें",
+    phone: "फ़ोन नंबर",
+    passkeyContinue: "पासकी से जारी रखें", passkeyCreate: "पासकी बनाएं",
+    passkeyHint: "अपने डिवाइस के फिंगरप्रिंट, फेस रिकग्निशन या PIN का उपयोग करें।",
+    passkeyCreateHint: "फिंगरप्रिंट, फेस या PIN से अपना डिवाइस पंजीकृत करें।",
+    newUserLink: "नए उपयोगकर्ता? पासकी बनाएं",
+    existingUserLink: "पहले से खाता है? पासकी से लॉगिन करें",
+    passkeyChecking: "आपका खाता जांचा जा रहा है…", passkeyCreating: "पासकी बनाई जा रही है…",
+    passkeyVerifying: "पासकी सत्यापित की जा रही है…", passkeyCreated: "पासकी सफलतापूर्वक सत्यापित की गई",
+    passkeyUnsupported: "इस डिवाइस या ब्राउज़र पर पासकी समर्थित नहीं है।",
+    invalidPhone: "एक मान्य 10-अंकीय मोबाइल नंबर दर्ज करें।",
     fetchingLoc: "आपकी लोकेशन ढूंढी जा रही है…", locFound: "लोकेशन मिल गई",
     manualLoc: "मैन्युअल रूप से दर्ज करें", allowLoc: "लोकेशन एक्सेस दें",
     continueApp: "जारी रखें",
@@ -241,11 +274,62 @@ function StatusBar({ c }) {
 }
 
 /* =========================================================================
-   LOGIN / OTP / LOCATION SCREENS
+   LOGIN / PASSKEY / LOCATION SCREENS
    ========================================================================= */
-function LoginScreen({ c, t, onSend }) {
+function LoginScreen({ c, t, onAuthenticated }) {
   const [phone, setPhone] = useState("");
-  const valid = phone.replace(/\D/g, "").length === 10;
+  const [mode, setMode] = useState("login"); // "login" | "register"
+  const [status, setStatus] = useState("idle"); // idle | checking | registering | authenticating | success
+  const [errorMsg, setErrorMsg] = useState("");
+  const supportedRef = useRef(isWebAuthnSupported());
+  const supported = supportedRef.current;
+
+  const phoneValid = /^[6-9]\d{9}$/.test(phone);
+  const busy = status !== "idle" && status !== "success";
+
+  const handleContinue = async () => {
+    if (!phoneValid || busy || status === "success") return;
+    setErrorMsg("");
+
+    if (!supported) {
+      setErrorMsg(t.passkeyUnsupported);
+      return;
+    }
+
+    try {
+      let session;
+
+      if (mode === "register") {
+        setStatus("registering");
+        session = await registerPasskey(phone);
+      } else {
+        setStatus("authenticating");
+        session = await loginWithPasskey(phone);
+      }
+
+      setStatus("success");
+      setTimeout(() => onAuthenticated(session?.user?.phone ?? phone), 650);
+    } catch (err) {
+      console.error("[AUTH-UI] Ceremony error:", err.code, err.message, err);
+      setStatus("idle");
+      if (err?.code === "no_passkey") {
+        setErrorMsg("No passkey is registered for this number. Click 'New user? Create Passkey' below.");
+      } else {
+        setErrorMsg(err?.message || "Passkey authentication failed. Please try again.");
+      }
+    }
+  };
+
+  const buttonLabel = () => {
+    if (status === "checking") return t.passkeyChecking;
+    if (status === "registering") return t.passkeyCreating;
+    if (status === "authenticating") return t.passkeyVerifying;
+    if (status === "success") return t.passkeyCreated;
+    return mode === "register" ? t.passkeyCreate : t.passkeyContinue;
+  };
+
+  const ButtonIcon = status === "success" ? CheckCircle2 : busy ? Loader2 : Fingerprint;
+
   return (
     <div className="screen login-screen" style={{ background: c.primary }}>
       <div className="login-top">
@@ -262,73 +346,59 @@ function LoginScreen({ c, t, onSend }) {
             placeholder="98765 43210"
             value={phone}
             maxLength={10}
-            onChange={(e) => setPhone(e.target.value.replace(/\D/g, "").slice(0, 10))}
+            disabled={busy || status === "success"}
+            onChange={(e) => { setPhone(e.target.value.replace(/\D/g, "").slice(0, 10)); setErrorMsg(""); }}
             style={{ color: c.ink }}
           />
         </div>
+
         <button
-          className="primary-btn"
-          disabled={!valid}
-          style={{ background: valid ? c.primary : c.border, color: valid ? "#fff" : c.inkSoft }}
-          onClick={() => onSend(phone)}
+          className="primary-btn passkey-btn"
+          disabled={!phoneValid || busy || status === "success"}
+          style={{
+            background: (phoneValid && !busy && status !== "success") ? c.primary : c.border,
+            color: (phoneValid && !busy && status !== "success") ? "#fff" : c.inkSoft,
+          }}
+          onClick={handleContinue}
         >
-          {t.sendOtp}
+          <ButtonIcon size={18} className={busy ? "spin" : ""} />
+          <span>{buttonLabel()}</span>
         </button>
+
+        <p className="fine-print passkey-hint" style={{ color: c.inkSoft }}>
+          <KeyRound size={13} className="inline-icon" />
+          {mode === "register" ? (t.passkeyCreateHint || t.passkeyHint) : t.passkeyHint}
+        </p>
+
+        <button
+          type="button"
+          className="text-btn"
+          style={{ color: c.primary, padding: "2px 0", fontSize: "0.8125rem", cursor: "pointer" }}
+          onClick={() => {
+            setMode((m) => (m === "login" ? "register" : "login"));
+            setErrorMsg("");
+          }}
+          disabled={busy || status === "success"}
+        >
+          {mode === "login" ? t.newUserLink : t.existingUserLink}
+        </button>
+
+        {!supported && (
+          <p className="fine-print passkey-error" style={{ color: c.danger }}>
+            <ShieldAlert size={13} className="inline-icon" />
+            {t.passkeyUnsupported}
+          </p>
+        )}
+        {supported && errorMsg && (
+          <p className="fine-print passkey-error" style={{ color: c.danger }}>
+            <ShieldAlert size={13} className="inline-icon" />
+            {errorMsg}
+          </p>
+        )}
+
         <p className="fine-print" style={{ color: c.inkSoft }}>
           By continuing you agree this number may be used to alert emergency contacts and authorities during an SOS.
         </p>
-      </div>
-    </div>
-  );
-}
-
-function OtpScreen({ c, t, phone, onVerify, onBack }) {
-  const [digits, setDigits] = useState(["", "", "", "", "", ""]);
-  const refs = useRef([]);
-  const complete = digits.every((d) => d !== "");
-
-  const setDigit = (i, val) => {
-    const v = val.replace(/\D/g, "").slice(-1);
-    const next = [...digits];
-    next[i] = v;
-    setDigits(next);
-    if (v && i < 5) refs.current[i + 1]?.focus();
-  };
-  const onKeyDown = (i, e) => {
-    if (e.key === "Backspace" && !digits[i] && i > 0) refs.current[i - 1]?.focus();
-  };
-
-  return (
-    <div className="screen" style={{ background: c.bg }}>
-      <div className="simple-top">
-        <button className="icon-btn" onClick={onBack} style={{ color: c.ink }}><ArrowLeft size={20} /></button>
-      </div>
-      <div className="otp-wrap">
-        <h2 style={{ color: c.ink }}>{t.enterOtp}</h2>
-        <p style={{ color: c.inkSoft }}>{t.otpSub} +91 {phone.slice(0,5)} {phone.slice(5)}</p>
-        <div className="otp-boxes">
-          {digits.map((d, i) => (
-            <input
-              key={i}
-              ref={(el) => (refs.current[i] = el)}
-              value={d}
-              inputMode="numeric"
-              maxLength={1}
-              onChange={(e) => setDigit(i, e.target.value)}
-              onKeyDown={(e) => onKeyDown(i, e)}
-              style={{ borderColor: d ? c.primary : c.border, color: c.ink, background: c.surface }}
-            />
-          ))}
-        </div>
-        <button
-          className="primary-btn"
-          disabled={!complete}
-          style={{ background: complete ? c.primary : c.border, color: complete ? "#fff" : c.inkSoft }}
-          onClick={onVerify}
-        >
-          {t.verify}
-        </button>
-        <button className="text-btn" style={{ color: c.primary }}>{t.resend}</button>
       </div>
     </div>
   );
@@ -1068,7 +1138,7 @@ function ContactsSheet({ c, open, onClose, contacts, setContacts }) {
   );
 }
 
-function MenuSheet({ c, open, onClose, theme, setTheme, lang, setLang, sirenOn, toggleSiren, t }) {
+function MenuSheet({ c, open, onClose, theme, setTheme, lang, setLang, sirenOn, toggleSiren, t, onLogout }) {
   const [screen, setScreen] = useState("root");
   useEffect(() => { if (open) setScreen("root"); }, [open]);
 
@@ -1095,6 +1165,10 @@ function MenuSheet({ c, open, onClose, theme, setTheme, lang, setLang, sirenOn, 
             <Info size={18} color={c.ink} />
             <span style={{ color: c.ink }}>{t.about}</span>
             <ChevronRight size={16} color={c.inkSoft} style={{ marginLeft: "auto" }} />
+          </button>
+          <button className="menu-row" onClick={onLogout} style={{ borderColor: c.border, marginTop: 10 }}>
+            <ShieldAlert size={18} color={c.danger} />
+            <span style={{ color: c.danger, fontWeight: 600 }}>Sign Out</span>
           </button>
         </div>
       )}
@@ -1142,7 +1216,7 @@ function MenuSheet({ c, open, onClose, theme, setTheme, lang, setLang, sirenOn, 
    ROOT APP
    ========================================================================= */
 export default function App() {
-  const [stage, setStage] = useState("login"); // login | otp | location | home
+  const [stage, setStage] = useState("loading"); // loading | login | location | home
   const [phone, setPhone] = useState("");
   const [location, setLocation] = useState("Kavali, Andhra Pradesh");
   const [activeTab, setActiveTab] = useState("maps");
@@ -1157,6 +1231,33 @@ export default function App() {
   ]);
   const [reports, setReports] = useState(SEED_REPORTS);
   const siren = useAudioSiren();
+
+  useEffect(() => {
+    async function restoreSession() {
+      try {
+        const session = await verifyCurrentSession();
+        const userPhone = session?.user?.phone || session?.phone;
+        if (userPhone) {
+          console.log("[AUTH] Restored active authenticated session for:", userPhone);
+          setPhone(userPhone);
+          setStage("home");
+        } else {
+          setStage("login");
+        }
+      } catch (err) {
+        console.warn("[AUTH] Session check error:", err);
+        setStage("login");
+      }
+    }
+    restoreSession();
+  }, []);
+
+  const handleLogout = async () => {
+    await logout();
+    setPhone("");
+    setStage("login");
+    setMenuOpen(false);
+  };
 
   const c = theme === "light" ? LIGHT : DARK;
   const t = STRINGS[lang];
@@ -1213,7 +1314,6 @@ export default function App() {
         .sb-dot { width: 4px; height: 4px; border-radius: 2px; background: currentColor; opacity: 0.9; }
 
         .screen { flex: 1; display: flex; flex-direction: column; overflow-y: auto; }
-        .simple-top { padding: 8px 16px 0; }
 
         h1, h2, h3 { font-family: 'Manrope', sans-serif; margin: 0; }
         p { margin: 0; font-size: 0.875rem; line-height: 1.5; }
@@ -1237,10 +1337,12 @@ export default function App() {
         .flex1 { flex: 1; }
         .two-btn-row { display: flex; gap: 10px; margin-top: 6px; }
 
-        .otp-wrap { padding: 30px 26px; display: flex; flex-direction: column; gap: 8px; align-items: center; text-align: center; }
-        .otp-boxes { display: flex; gap: 8px; margin: 18px 0 6px; }
-        .otp-boxes input { width: 42px; height: 52px; text-align: center; font-size: 1.25rem; font-weight: 700; border-radius: 12px; border: 1.5px solid; font-family: 'Manrope', sans-serif; }
-        .otp-wrap .primary-btn { width: 100%; margin-top: 10px; }
+        .passkey-btn { gap: 8px; }
+        .passkey-hint { display: flex; align-items: flex-start; gap: 4px; text-align: left; }
+        .passkey-error { display: flex; align-items: flex-start; gap: 4px; text-align: left; font-weight: 600; }
+        .inline-icon { flex-shrink: 0; margin-top: 0.1em; }
+        .spin { animation: spin 0.8s linear infinite; }
+        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
         .loc-wrap { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 10px; padding: 30px; }
         .loc-pulse-wrap { margin-bottom: 8px; }
@@ -1369,11 +1471,14 @@ export default function App() {
           <div className="home-indicator" />
           <StatusBar c={theme === "light" ? { headerText: c.ink } : { headerText: c.ink }} />
 
-          {stage === "login" && (
-            <LoginScreen c={c} t={t} onSend={(p) => { setPhone(p); setStage("otp"); }} />
+          {stage === "loading" && (
+            <div className="screen" style={{ background: c.bg, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12 }}>
+              <Loader2 size={36} className="spin" style={{ color: c.primary }} />
+              <span style={{ fontSize: "0.875rem", color: c.inkSoft, fontWeight: 500 }}>Checking secure session...</span>
+            </div>
           )}
-          {stage === "otp" && (
-            <OtpScreen c={c} t={t} phone={phone} onBack={() => setStage("login")} onVerify={() => setStage("location")} />
+          {stage === "login" && (
+            <LoginScreen c={c} t={t} onAuthenticated={(p) => { setPhone(p); setStage("location"); }} />
           )}
           {stage === "location" && (
             <LocationScreen c={c} t={t} onDone={(loc) => { setLocation(loc); setStage("home"); }} />
@@ -1397,6 +1502,7 @@ export default function App() {
                 c={c} open={menuOpen} onClose={() => setMenuOpen(false)}
                 theme={theme} setTheme={setTheme} lang={lang} setLang={setLang}
                 sirenOn={sirenOn} toggleSiren={toggleSiren} t={t}
+                onLogout={handleLogout}
               />
             </>
           )}

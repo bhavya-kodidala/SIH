@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.env
+.env.local
+.webauthn_dev_db.json
+supabase/.temp/
+*.timestamp-*.mjs
