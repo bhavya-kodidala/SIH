@@ -1,0 +1,161 @@
+{
+  "users": {
+    "+919988776655": {
+      "id": "f99323b4-ee42-474e-9114-8c13dc15d0eb",
+      "phone": "+919988776655",
+      "createdAt": "2026-09-13T12:29:00.571Z"
+    },
+    "+917207199309": {
+      "id": "c742e391-468a-4a5a-8e8d-6a33b405e679",
+      "phone": "+917207199309",
+      "createdAt": "2026-09-13T12:31:26.785Z"
+    },
+    "+919030919951": {
+      "id": "6f4cf5fe-8234-4cc5-a73d-665a5ea4a541",
+      "phone": "+919030919951",
+      "createdAt": "2026-09-13T13:25:19.334Z"
+    },
+    "+919876543210": {
+      "id": "4b04bf80-af9b-48a1-84a8-b1918965bdbc",
+      "phone": "+919876543210",
+      "createdAt": "2026-09-13T14:03:18.662Z"
+    }
+  },
+  "credentials": {
+    "GnMw8Inj8pu4jt00oFy3J2TsLBbde1tLyf7s4NgCpmo": {
+      "id": "cf322e0d-6ef3-472d-bbbb-4ea5e64f8d87",
+      "userId": "4b04bf80-af9b-48a1-84a8-b1918965bdbc",
+      "credentialId": "GnMw8Inj8pu4jt00oFy3J2TsLBbde1tLyf7s4NgCpmo",
+      "publicKey": "pAEBAycgBiFYIGghTfrBGFMAqWGyqPOjZKUYB2PAl7+lljHoZElFZKlV",
+      "counter": 2,
+      "transports": [
+        "internal"
+      ],
+      "deviceType": "singleDevice",
+      "backedUp": false,
+      "createdAt": "2026-09-13T14:03:18.715Z",
+      "lastUsedAt": "2026-09-13T14:03:22.989Z"
+    },
+    "G0CpGgY7KlvjEx13mOp0HLJf6_9ngHmgflXWc5Fo-Mk": {
+      "id": "9588e3df-16e8-408f-a28f-657eb046967c",
+      "userId": "4b04bf80-af9b-48a1-84a8-b1918965bdbc",
+      "credentialId": "G0CpGgY7KlvjEx13mOp0HLJf6_9ngHmgflXWc5Fo-Mk",
+      "publicKey": "pAEBAycgBiFYIOm3GW0jEITyltfaP+wVJ6ocBtvAqob2W9eLGeNaPRx2",
+      "counter": 3,
+      "transports": [
+        "internal"
+      ],
+      "deviceType": "singleDevice",
+      "backedUp": false,
+      "createdAt": "2026-09-13T14:04:22.183Z",
+      "lastUsedAt": "2026-09-13T14:04:26.480Z"
+    },
+    "DkUg9LdKZvz30WZbE8iy_LDMorHw6vXb6-v4IxPns9w": {
+      "id": "8965b720-6813-4b6f-a295-8a32d37c64fc",
+      "userId": "4b04bf80-af9b-48a1-84a8-b1918965bdbc",
+      "credentialId": "DkUg9LdKZvz30WZbE8iy_LDMorHw6vXb6-v4IxPns9w",
+      "publicKey": "pAEBAycgBiFYII0L/qO1Bxp697J+9zr2RGLZk/oLz7+CrMne9VoJOHBJ",
+      "counter": 3,
+      "transports": [
+        "internal"
+      ],
+      "deviceType": "singleDevice",
+      "backedUp": false,
+      "createdAt": "2026-09-13T14:05:51.437Z",
+      "lastUsedAt": "2026-09-13T14:05:55.753Z"
+    },
+    "7_DmpXMPLHbDUBCxR4ZWH2bvtmWol9eSjdbf8DdSWQI": {
+      "id": "d479d0de-6635-433f-b9ad-42ed09b5bee7",
+      "userId": "6f4cf5fe-8234-4cc5-a73d-665a5ea4a541",
+      "credentialId": "7_DmpXMPLHbDUBCxR4ZWH2bvtmWol9eSjdbf8DdSWQI",
+      "publicKey": "pQECAyYgASFYIFoDS3ZJhweCTKf2CQg8Mi0+g0zplP8zCTOG/u5X+EVHIlgg3EFhNAy0q6/vJdxwrBElgwaqeWDHAPGd6SpDR5UYAyk=",
+      "counter": 0,
+      "transports": [
+        "internal"
+      ],
+      "deviceType": "singleDevice",
+      "backedUp": false,
+      "createdAt": "2026-09-13T14:10:46.406Z",
+      "lastUsedAt": "2026-09-13T14:10:46.406Z"
+    },
+    "N_u0Rqi0X94eggWClsb9Qg": {
+      "id": "04f89c49-5426-489e-b83f-423153f8fd4b",
+      "userId": "c742e391-468a-4a5a-8e8d-6a33b405e679",
+      "credentialId": "N_u0Rqi0X94eggWClsb9Qg",
+      "publicKey": "pQECAyYgASFYIH0D2OykxUzZ1LHwOQMxh3/cZ7bhC7g3uet54wFVeTnhIlggmhHZKZXZ93Gpxy+sHq1BKTDSqydKs/81cQ1YxZd57UE=",
+      "counter": 0,
+      "transports": [
+        "hybrid",
+        "internal"
+      ],
+      "deviceType": "multiDevice",
+      "backedUp": true,
+      "createdAt": "2026-09-14T14:19:30.189Z",
+      "lastUsedAt": "2026-09-14T14:19:30.189Z"
+    }
+  },
+  "challenges": {
+    "+919988776655:registration": {
+      "challenge": "wIcWGVlJlHTxevMXMt8EAdb3uERaNuIy5hhnOnclJ3Q",
+      "createdAt": "2026-09-13T12:29:00.572Z"
+    }
+  },
+  "sessions": {
+    "cf320904-bf05-4424-b26f-ed975c9ea755": {
+      "token": "cf320904-bf05-4424-b26f-ed975c9ea755",
+      "userId": "4b04bf80-af9b-48a1-84a8-b1918965bdbc",
+      "phone": "+919876543210",
+      "createdAt": "2026-09-13T14:03:18.715Z",
+      "expiresAt": "2026-10-13T14:03:18.715Z"
+    },
+    "c0f7dea5-e021-4e74-a0b4-4d20f2704cad": {
+      "token": "c0f7dea5-e021-4e74-a0b4-4d20f2704cad",
+      "userId": "4b04bf80-af9b-48a1-84a8-b1918965bdbc",
+      "phone": "+919876543210",
+      "createdAt": "2026-09-13T14:03:22.989Z",
+      "expiresAt": "2026-10-13T14:03:22.989Z"
+    },
+    "7ed4c6e6-d3fd-4565-a469-f040f5c5e9bd": {
+      "token": "7ed4c6e6-d3fd-4565-a469-f040f5c5e9bd",
+      "userId": "4b04bf80-af9b-48a1-84a8-b1918965bdbc",
+      "phone": "+919876543210",
+      "createdAt": "2026-09-13T14:04:22.183Z",
+      "expiresAt": "2026-10-13T14:04:22.183Z"
+    },
+    "82ce8f4f-2d41-460c-988a-19207546266b": {
+      "token": "82ce8f4f-2d41-460c-988a-19207546266b",
+      "userId": "4b04bf80-af9b-48a1-84a8-b1918965bdbc",
+      "phone": "+919876543210",
+      "createdAt": "2026-09-13T14:04:26.480Z",
+      "expiresAt": "2026-10-13T14:04:26.480Z"
+    },
+    "d33a3b18-0768-4e42-95be-2646424f7960": {
+      "token": "d33a3b18-0768-4e42-95be-2646424f7960",
+      "userId": "4b04bf80-af9b-48a1-84a8-b1918965bdbc",
+      "phone": "+919876543210",
+      "createdAt": "2026-09-13T14:05:51.438Z",
+      "expiresAt": "2026-10-13T14:05:51.438Z"
+    },
+    "0ce9b26c-0603-49f9-9ffe-2965686210de": {
+      "token": "0ce9b26c-0603-49f9-9ffe-2965686210de",
+      "userId": "4b04bf80-af9b-48a1-84a8-b1918965bdbc",
+      "phone": "+919876543210",
+      "createdAt": "2026-09-13T14:05:55.753Z",
+      "expiresAt": "2026-10-13T14:05:55.753Z"
+    },
+    "6d0eac4e-fef2-48ca-a027-1d6bf676cb89": {
+      "token": "6d0eac4e-fef2-48ca-a027-1d6bf676cb89",
+      "userId": "6f4cf5fe-8234-4cc5-a73d-665a5ea4a541",
+      "phone": "+919030919951",
+      "createdAt": "2026-09-13T14:10:46.406Z",
+      "expiresAt": "2026-10-13T14:10:46.406Z"
+    },
+    "e735b813-0ed8-4a4d-bd9e-d2eea5b5549e": {
+      "token": "e735b813-0ed8-4a4d-bd9e-d2eea5b5549e",
+      "userId": "c742e391-468a-4a5a-8e8d-6a33b405e679",
+      "phone": "+917207199309",
+      "createdAt": "2026-09-14T14:19:30.189Z",
+      "expiresAt": "2026-10-14T14:19:30.189Z"
+    }
+  }
+}
