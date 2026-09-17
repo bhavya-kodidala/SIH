@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
+import { MapContainer, TileLayer, Marker, Popup, Circle, useMap } from "react-leaflet";
 import {
   MapPin, Phone, Users, MoreVertical, Map as MapIcon, FileWarning, Siren,
   Building2, ShieldCheck, X, ChevronRight, ChevronLeft, Plus, Camera, Video,
@@ -6,16 +7,37 @@ import {
   Star, Trash2, Pencil, Flame, Stethoscope, Car, Waves, Mountain,
   Building, UserX, CloudRain, HelpCircle, Square, Clock, ClipboardList,
   BadgeCheck, ChevronDown, Volume2, VolumeX, LocateFixed, PhoneCall,
-  Fingerprint, KeyRound, Loader2, ShieldAlert
+  Fingerprint, KeyRound, Loader2, ShieldAlert,
+  WifiOff, Wifi, Send, Share2, Radio, BellRing, BookOpen, AlertTriangle,
+  CloudLightning, Wind, Droplets, Thermometer, RefreshCw, MessageSquare,
+  Download, Check
 } from "lucide-react";
+import { checkUserExists, registerPasskey, loginWithPasskey, isWebAuthnSupported, verifyCurrentSession, logout, clearSession } from "./lib/auth";
+import { supabase } from "./lib/supabaseClient";
+import { getCurrentPosition, watchDeviceLocation } from "./lib/geolocation";
+import { reverseGeocode } from "./lib/geocoding";
+import { fetchNearbyFacilities } from "./lib/facilities";
+import { coloredDotIcon, youAreHereIcon } from "./lib/mapIcons";
+import { getOfflineQueue, queueOfflineItem, syncOfflineQueue } from "./lib/pwa";
+import { generateSosMessage, generateReportMessage, openWhatsApp, openSms, blastWhatsAppToContacts } from "./lib/messaging";
+import { fetchLiveWeatherAndHazard } from "./lib/weather";
+import { playAlertChime, isNotificationSupported, getNotificationPermission, requestNotificationPermission, sendBrowserNotification } from "./lib/notifications";
+import { SURVIVAL_GUIDES } from "./lib/survivalGuides";
 import {
-  checkUserExists,
-  registerPasskey,
-  loginWithPasskey,
-  isWebAuthnSupported,
-  verifyCurrentSession,
-  logout
-} from "./lib/auth";
+  cacheFacilities,
+  getCachedFacilities,
+  saveLastKnownLocation,
+  getLastKnownLocation,
+  saveAppState,
+  getAppState,
+  getIncidentReports,
+  saveIncidentReport,
+  saveEmergencyContacts,
+  getEmergencyContacts,
+} from "./lib/offlineDb";
+import { cacheEmergencyAreaTiles, getCachedMapStatus } from "./lib/mapTiles";
+import { initAutoSync, syncPendingEmergencyQueue, subscribeToSyncEvents } from "./lib/syncManager";
+
 
 /* =========================================================================
    DESIGN TOKENS
@@ -63,15 +85,17 @@ const DARK = {
 const STRINGS = {
   en: {
     appName: "RakshaNet",
+    passkeyCreateHint: "Register this device using fingerprint, face recognition, or device PIN.",
+    newUserLink: "New user? Create Passkey",
+    existingUserLink: "Already registered? Sign in with Passkey",
+    signOut: "Sign Out",
+
     tagline: "Emergency response, one tap away",
     phone: "Phone number",
     passkeyContinue: "Continue with Passkey", passkeyCreate: "Create Passkey",
     passkeyHint: "Use your device's fingerprint, face recognition, or device PIN.",
-    passkeyCreateHint: "Register this device using fingerprint, face recognition, or device PIN.",
-    newUserLink: "New user? Create Passkey",
-    existingUserLink: "Already registered? Sign in with Passkey",
     passkeyChecking: "Checking your account…", passkeyCreating: "Creating your passkey…",
-    passkeyVerifying: "Verifying your passkey…", passkeyCreated: "Passkey verified successfully",
+    passkeyVerifying: "Verifying your passkey…", passkeyCreated: "Passkey created successfully",
     passkeyUnsupported: "Passkeys are not supported on this device or browser.",
     invalidPhone: "Enter a valid 10-digit mobile number.",
     fetchingLoc: "Finding your location…", locFound: "Location found",
@@ -82,15 +106,17 @@ const STRINGS = {
     theme: "Theme", language: "Language", siren: "Emergency siren", about: "About",
   },
   te: {
-    appName: "RakshaNet", tagline: "అత్యవసర సహాయం, ఒక్క నొక్కుతో",
-    phone: "ఫోన్ నంబర్",
-    passkeyContinue: "పాస్‌కీతో కొనసాగించండి", passkeyCreate: "పాస్‌కీ సృష్టించండి",
-    passkeyHint: "మీ పరికరం యొక్క ఫింగర్‌ప్రింట్, ఫేస్ రికగ్నిషన్ లేదా PIN ఉపయోగించండి.",
+    appName: "RakshaNet",
     passkeyCreateHint: "ఫింగర్‌ప్రింట్, ఫేస్ లేదా PIN తో మీ పరికరాన్ని నమోదు చేయండి.",
     newUserLink: "కొత్త వినియోగదారులా? పాస్‌కీ సృష్టించండి",
     existingUserLink: "ఇప్పటికే ఖాతా ఉందా? పాస్‌కీతో లాగిన్ అవ్వండి",
+    signOut: "సైన్ అవుట్",
+    tagline: "అత్యవసర సహాయం, ఒక్క నొక్కుతో",
+    phone: "ఫోన్ నంబర్",
+    passkeyContinue: "పాస్‌కీతో కొనసాగించండి", passkeyCreate: "పాస్‌కీ సృష్టించండి",
+    passkeyHint: "మీ పరికరం యొక్క ఫింగర్‌ప్రింట్, ఫేస్ రికగ్నిషన్ లేదా PIN ఉపయోగించండి.",
     passkeyChecking: "మీ ఖాతాను తనిఖీ చేస్తోంది…", passkeyCreating: "పాస్‌కీని సృష్టిస్తోంది…",
-    passkeyVerifying: "పాస్‌కీని ధృవీకరిస్తోంది…", passkeyCreated: "పాస్‌కీ విజయవంతంగా ధృవీకరించబడింది",
+    passkeyVerifying: "పాస్‌కీని ధృవీకరిస్తోంది…", passkeyCreated: "పాస్‌కీ విజయవంతంగా సృష్టించబడింది",
     passkeyUnsupported: "ఈ పరికరం లేదా బ్రౌజర్‌లో పాస్‌కీలు మద్దతు లేవు.",
     invalidPhone: "సరైన 10-అంకెల మొబైల్ నంబర్ నమోదు చేయండి.",
     fetchingLoc: "మీ లొకేషన్ కనుగొంటోంది…", locFound: "లొకేషన్ దొరికింది",
@@ -101,15 +127,17 @@ const STRINGS = {
     theme: "థీమ్", language: "భాష", siren: "అత్యవసర సైరన్", about: "గురించి",
   },
   hi: {
-    appName: "RakshaNet", tagline: "आपातकालीन सहायता, एक टैप में",
-    phone: "फ़ोन नंबर",
-    passkeyContinue: "पासकी से जारी रखें", passkeyCreate: "पासकी बनाएं",
-    passkeyHint: "अपने डिवाइस के फिंगरप्रिंट, फेस रिकग्निशन या PIN का उपयोग करें।",
+    appName: "RakshaNet",
     passkeyCreateHint: "फिंगरप्रिंट, फेस या PIN से अपना डिवाइस पंजीकृत करें।",
     newUserLink: "नए उपयोगकर्ता? पासकी बनाएं",
     existingUserLink: "पहले से खाता है? पासकी से लॉगिन करें",
+    signOut: "साइन आउट",
+    tagline: "आपातकालीन सहायता, एक टैप में",
+    phone: "फ़ोन नंबर",
+    passkeyContinue: "पासकी से जारी रखें", passkeyCreate: "पासकी बनाएं",
+    passkeyHint: "अपने डिवाइस के फिंगरप्रिंट, फेस रिकग्निशन या PIN का उपयोग करें।",
     passkeyChecking: "आपका खाता जांचा जा रहा है…", passkeyCreating: "पासकी बनाई जा रही है…",
-    passkeyVerifying: "पासकी सत्यापित की जा रही है…", passkeyCreated: "पासकी सफलतापूर्वक सत्यापित की गई",
+    passkeyVerifying: "पासकी सत्यापित की जा रही है…", passkeyCreated: "पासकी सफलतापूर्वक बनाई गई",
     passkeyUnsupported: "इस डिवाइस या ब्राउज़र पर पासकी समर्थित नहीं है।",
     invalidPhone: "एक मान्य 10-अंकीय मोबाइल नंबर दर्ज करें।",
     fetchingLoc: "आपकी लोकेशन ढूंढी जा रही है…", locFound: "लोकेशन मिल गई",
@@ -122,24 +150,15 @@ const STRINGS = {
 };
 
 /* =========================================================================
-   MOCK DATA
+   REAL FACILITY TYPE STYLING
+   (the facility DATA itself is fetched live from OpenStreetMap Overpass —
+   see src/lib/facilities.js — this map only controls icon/color/label)
    ========================================================================= */
-const FACILITIES = [
-  { id: "f1", type: "hospital", name: "Sri Ram General Hospital", address: "Ring Road, Kavali", distance: "1.2 km", phone: "+91 98765 10001", x: 46, y: 38 },
-  { id: "f2", type: "fire", name: "Kavali Fire Station", address: "Station Road, Kavali", distance: "2.0 km", phone: "+91 98765 10002", x: 68, y: 60 },
-  { id: "f3", type: "police", name: "Town Police Station", address: "Main Bazaar, Kavali", distance: "0.9 km", phone: "+91 98765 10003", x: 30, y: 55 },
-  { id: "f4", type: "ambulance", name: "108 Ambulance Point", address: "Bus Stand, Kavali", distance: "1.6 km", phone: "108", x: 55, y: 74 },
-  { id: "f5", type: "shelter", name: "Govt. High School Shelter", address: "School Street, Kavali", distance: "2.8 km", phone: "+91 98765 10004", x: 20, y: 22 },
-  { id: "f6", type: "govt", name: "Disaster Mgmt. Office", address: "Collectorate Road", distance: "3.4 km", phone: "+91 98765 10005", x: 78, y: 28 },
-];
-
 const FACILITY_META = {
   hospital: { label: "Hospital", icon: Stethoscope, color: "danger" },
   fire: { label: "Fire Station", icon: Flame, color: "warn" },
   police: { label: "Police Station", icon: ShieldCheck, color: "primary" },
-  ambulance: { label: "Ambulance", icon: Car, color: "danger" },
-  shelter: { label: "Shelter", icon: Building2, color: "safe" },
-  govt: { label: "Govt. Office", icon: Building, color: "primary" },
+  shelter: { label: "Emergency Shelter", icon: Building2, color: "safe" },
 };
 
 const EMERGENCY_TYPES = [
@@ -173,14 +192,6 @@ const AUTHORITY_FOR = {
   natural: "Disaster Management Authority", other: "Local Authority",
 };
 
-const SHELTERS = [
-  { id: "s1", name: "Govt. High School Relief Camp", type: "flood", address: "School Street, Kavali", distance: "2.8 km", status: "Open", capacity: "120 / 200", phone: "+91 98765 10004" },
-  { id: "s2", name: "Community Hall Evacuation Center", type: "fire", address: "Temple Road, Kavali", distance: "1.9 km", status: "Open", capacity: "40 / 80", phone: "+91 98765 10006" },
-  { id: "s3", name: "ZP Junior College Safe Zone", type: "earthquake", address: "College Road, Kavali", distance: "3.6 km", status: "Limited", capacity: "180 / 190", phone: "+91 98765 10007" },
-  { id: "s4", name: "Panchayat Relief Camp", type: "flood", address: "Canal Bund Road", distance: "4.1 km", status: "Open", capacity: "60 / 150", phone: "+91 98765 10008" },
-  { id: "s5", name: "Municipal Stadium Evacuation Center", type: "fire", address: "Stadium Road", distance: "2.2 km", status: "Full", capacity: "200 / 200", phone: "+91 98765 10009" },
-];
-
 const SEVERITIES = [
   { id: "low", label: "Low", color: "safe" },
   { id: "medium", label: "Medium", color: "warn" },
@@ -190,10 +201,13 @@ const SEVERITIES = [
 
 const STATUS_STEPS = ["Report Submitted", "Report Received", "Assigned to Authority", "In Progress", "Resolved"];
 
+// Example past-report records shown on the Authority tab. These are static
+// demo history (not tied to the live location feature at all), but the
+// place names are kept generic/non-specific rather than a fixed fake town.
 const SEED_REPORTS = [
-  { id: "RN-48213", type: "flood", severity: "high", location: "Kavali, Andhra Pradesh", time: "Today, 9:14 AM", status: 2, authority: "Disaster Management Authority", description: "Water entering ground-floor houses near canal bund." },
-  { id: "RN-48187", type: "road", severity: "critical", location: "NH16, Kavali Bypass", time: "Yesterday, 6:40 PM", status: 4, authority: "Hospital / Police", description: "Two-vehicle collision, one person trapped." },
-  { id: "RN-48122", type: "medical", severity: "medium", location: "Ramalingapuram, Kavali", time: "2 days ago", status: 3, authority: "Hospital / Ambulance", description: "Elderly person collapsed, needs assistance." },
+  { id: "RN-48213", type: "flood", severity: "high", location: "Field-reported location", time: "Today, 9:14 AM", status: 2, authority: "Disaster Management Authority", description: "Water entering ground-floor houses near a canal bund." },
+  { id: "RN-48187", type: "road", severity: "critical", location: "Field-reported location", time: "Yesterday, 6:40 PM", status: 4, authority: "Hospital / Police", description: "Two-vehicle collision, one person trapped." },
+  { id: "RN-48122", type: "medical", severity: "medium", location: "Field-reported location", time: "2 days ago", status: 3, authority: "Hospital / Ambulance", description: "Elderly person collapsed, needs assistance." },
 ];
 
 /* =========================================================================
@@ -248,9 +262,10 @@ function useAudioSiren() {
 
 function Sheet({ open, onClose, title, children, height = "auto" }) {
   if (!open) return null;
+  const safeMaxHeight = typeof height === "string" && height.endsWith("vh") ? "88%" : height;
   return (
     <div className="sheet-overlay" onClick={onClose}>
-      <div className="sheet" style={{ maxHeight: height }} onClick={(e) => e.stopPropagation()}>
+      <div className="sheet" style={{ maxHeight: safeMaxHeight }} onClick={(e) => e.stopPropagation()}>
         <div className="sheet-handle" />
         <div className="sheet-head">
           <span className="sheet-title">{title}</span>
@@ -262,9 +277,9 @@ function Sheet({ open, onClose, title, children, height = "auto" }) {
   );
 }
 
-function StatusBar({ c }) {
+function StatusBar({ c, bg }) {
   return (
-    <div className="statusbar" style={{ color: c.headerText }}>
+    <div className="statusbar" style={{ color: c?.headerText || "#fff", background: bg || "transparent" }}>
       <span>9:41</span>
       <div className="statusbar-icons">
         <span className="sb-dot" /><span className="sb-dot" /><span className="sb-dot" />
@@ -280,6 +295,7 @@ function LoginScreen({ c, t, onAuthenticated }) {
   const [phone, setPhone] = useState("");
   const [mode, setMode] = useState("login"); // "login" | "register"
   const [status, setStatus] = useState("idle"); // idle | checking | registering | authenticating | success
+  const [knownUser, setKnownUser] = useState(null); // null = not checked yet, else boolean
   const [errorMsg, setErrorMsg] = useState("");
   const supportedRef = useRef(isWebAuthnSupported());
   const supported = supportedRef.current;
@@ -287,36 +303,53 @@ function LoginScreen({ c, t, onAuthenticated }) {
   const phoneValid = /^[6-9]\d{9}$/.test(phone);
   const busy = status !== "idle" && status !== "success";
 
+  // Quietly check (debounced, 200 ms) whether this number already has a RakshaNet
+  // account, purely to label the button correctly ("Continue" vs "Create").
+  useEffect(() => {
+    setKnownUser(null);
+    if (!phoneValid || !supported) return;
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      try {
+        const res = await checkUserExists(phone);
+        if (!cancelled) {
+          const hasAccount = typeof res === "object" ? !!res.hasPasskey : !!res;
+          setKnownUser(hasAccount);
+        }
+      } catch {
+        /* stay silent here — handleContinue will surface any real error */
+      }
+    }, 200);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [phone, phoneValid, supported]);
+
   const handleContinue = async () => {
     if (!phoneValid || busy || status === "success") return;
     setErrorMsg("");
-
     if (!supported) {
       setErrorMsg(t.passkeyUnsupported);
       return;
     }
-
     try {
-      let session;
+      setStatus("checking");
+      const checkRes = knownUser !== null ? knownUser : await checkUserExists(phone);
+      const isExisting = typeof checkRes === "object" ? !!checkRes.hasPasskey : !!checkRes;
 
-      if (mode === "register") {
+      let sessionOrUser;
+      if (mode === "register" || (mode === "login" && knownUser === false)) {
         setStatus("registering");
-        session = await registerPasskey(phone);
+        sessionOrUser = await registerPasskey(phone);
       } else {
         setStatus("authenticating");
-        session = await loginWithPasskey(phone);
+        sessionOrUser = await loginWithPasskey(phone);
       }
 
       setStatus("success");
-      setTimeout(() => onAuthenticated(session?.user?.phone ?? phone), 650);
+      const authedPhone = sessionOrUser?.phone || sessionOrUser?.user?.phone || phone;
+      onAuthenticated(authedPhone);
     } catch (err) {
-      console.error("[AUTH-UI] Ceremony error:", err.code, err.message, err);
       setStatus("idle");
-      if (err?.code === "no_passkey") {
-        setErrorMsg("No passkey is registered for this number. Click 'New user? Create Passkey' below.");
-      } else {
-        setErrorMsg(err?.message || "Passkey authentication failed. Please try again.");
-      }
+      setErrorMsg(err?.message || "Something went wrong. Please try again.");
     }
   };
 
@@ -325,7 +358,8 @@ function LoginScreen({ c, t, onAuthenticated }) {
     if (status === "registering") return t.passkeyCreating;
     if (status === "authenticating") return t.passkeyVerifying;
     if (status === "success") return t.passkeyCreated;
-    return mode === "register" ? t.passkeyCreate : t.passkeyContinue;
+    if (mode === "register") return t.passkeyCreate;
+    return knownUser === false ? t.passkeyCreate : t.passkeyContinue;
   };
 
   const ButtonIcon = status === "success" ? CheckCircle2 : busy ? Loader2 : Fingerprint;
@@ -338,7 +372,7 @@ function LoginScreen({ c, t, onAuthenticated }) {
         <p className="brand-tag">{t.tagline}</p>
       </div>
       <div className="login-card" style={{ background: c.surface }}>
-        <label className="field-label" style={{ color: c.inkSoft }}>{t.phone}</label>
+        <label className="field-label" htmlFor="phone" style={{ color: c.inkSoft }}>{t.phone}</label>
         <div className="phone-input-row" style={{ borderColor: c.border }}>
           <span className="phone-cc" style={{ color: c.ink, borderColor: c.border }}>+91</span>
           <input
@@ -373,7 +407,7 @@ function LoginScreen({ c, t, onAuthenticated }) {
         <button
           type="button"
           className="text-btn"
-          style={{ color: c.primary, padding: "2px 0", fontSize: "0.8125rem", cursor: "pointer" }}
+          style={{ color: c.primary, padding: "2px 0", fontSize: "0.8125rem", cursor: "pointer", background: "none", border: "none" }}
           onClick={() => {
             setMode((m) => (m === "login" ? "register" : "login"));
             setErrorMsg("");
@@ -399,67 +433,233 @@ function LoginScreen({ c, t, onAuthenticated }) {
         <p className="fine-print" style={{ color: c.inkSoft }}>
           By continuing you agree this number may be used to alert emergency contacts and authorities during an SOS.
         </p>
+
+        {/* Offline Emergency Access Bypass */}
+        <button
+          className="secondary-btn"
+          style={{ borderColor: c.danger, color: c.danger, width: "100%", marginTop: 4, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}
+          onClick={() => onAuthenticated("Offline Responder")}
+          title="Access survival guides, local map, and emergency SOS queue without network connection"
+        >
+          <ShieldAlert size={16} />
+          <span>Enter Offline Emergency Mode</span>
+        </button>
       </div>
     </div>
   );
 }
 
+
 function LocationScreen({ c, t, onDone }) {
-  const [phase, setPhase] = useState("asking"); // asking | fetching | found | manual
+  const [phase, setPhase] = useState("asking"); // asking | fetching | found | error | manual
+  const [errorMsg, setErrorMsg] = useState("");
   const [manualText, setManualText] = useState("");
 
-  useEffect(() => {
-    if (phase === "fetching") {
-      const timer = setTimeout(() => setPhase("found"), 1400);
-      return () => clearTimeout(timer);
+  const runLocate = async () => {
+    setPhase("fetching");
+    setErrorMsg("");
+    try {
+      const pos = await getCurrentPosition();
+      let label = null;
+      if (navigator.onLine) {
+        try {
+          label = await reverseGeocode(pos.lat, pos.lng);
+        } catch {
+          label = null;
+        }
+      }
+      setPhase("found");
+      setTimeout(() => {
+        onDone({
+          lat: pos.lat,
+          lng: pos.lng,
+          accuracy: pos.accuracy,
+          timestamp: pos.timestamp,
+          status: pos.status || "Active",
+          label: label || "Live GPS Location",
+          source: "gps",
+        });
+      }, 600);
+    } catch (err) {
+      setErrorMsg(err?.message || "Couldn't get your location. Please try again.");
+      setPhase("error");
     }
-  }, [phase]);
-
-  useEffect(() => {
-    if (phase === "found") {
-      const timer = setTimeout(() => onDone("Kavali, Andhra Pradesh"), 900);
-      return () => clearTimeout(timer);
-    }
-  }, [phase, onDone]);
+  };
 
   return (
-    <div className="screen" style={{ background: c.bg }}>
-      <div className="loc-wrap">
-        <div className="loc-pulse-wrap">
-          <div className={"loc-pulse" + (phase === "fetching" ? " pulsing" : "")} style={{ background: c.primarySoft }}>
-            {phase === "found" ? <CheckCircle2 size={34} color={c.safe} /> : <LocateFixed size={34} color={c.primary} />}
+    <div className="screen loc-screen" style={{ background: c.bg }}>
+      <div className="loc-container">
+        {/* Top Hero / Radar Section */}
+        <div className="loc-hero">
+          <div className="loc-pulse-wrap">
+            <div className="loc-radar-halo" style={{ borderColor: `${c.primary}40` }} />
+            <div
+              className={"loc-pulse" + (phase === "fetching" ? " pulsing" : "")}
+              style={{
+                background: phase === "error" ? c.dangerSoft : phase === "found" ? c.safeSoft : c.primarySoft,
+              }}
+            >
+              {phase === "found" ? (
+                <CheckCircle2 size={34} color={c.safe} />
+              ) : phase === "error" ? (
+                <ShieldAlert size={34} color={c.danger} />
+              ) : phase === "fetching" ? (
+                <Loader2 size={32} className="spin" color={c.primary} />
+              ) : (
+                <LocateFixed size={32} color={c.primary} />
+              )}
+            </div>
           </div>
+
+          <div className="loc-badge-tag" style={{ background: c.primarySoft, color: c.primary }}>
+            <Navigation2 size={11} style={{ transform: "rotate(45deg)" }} />
+            <span>GPS DISPATCH SYSTEM</span>
+          </div>
+
+          <h2 className="loc-title" style={{ color: c.ink }}>
+            {phase === "fetching"
+              ? t.fetchingLoc
+              : phase === "found"
+              ? t.locFound
+              : phase === "error"
+              ? "Location Unavailable"
+              : phase === "manual"
+              ? t.manualLoc
+              : t.allowLoc}
+          </h2>
+
+          <p className="loc-desc" style={{ color: c.inkSoft }}>
+            {phase === "fetching"
+              ? "Connecting with device GPS satellites for high-accuracy triage coordinates…"
+              : phase === "found"
+              ? "GPS lock established. Directing you to your regional disaster response network…"
+              : phase === "error"
+              ? errorMsg || "We could not access your device location. Try again or enter manually."
+              : phase === "manual"
+              ? "Enter your district, city, or village name to view nearby emergency resources."
+              : "RakshaNet requires device GPS to route live SOS alerts, dispatch rescue teams, and map open shelters."}
+          </p>
         </div>
+
+        {/* Feature Highlights - fills the screen with purposeful, beautiful guidance cards */}
         {phase === "asking" && (
-          <>
-            <h2 style={{ color: c.ink }}>{t.allowLoc}</h2>
-            <p style={{ color: c.inkSoft }}>RakshaNet uses your live location to route SOS alerts, find nearby shelters and show emergency facilities around you.</p>
-            <button className="primary-btn" style={{ background: c.primary, color: "#fff" }} onClick={() => setPhase("fetching")}>Allow while using app</button>
-            <button className="text-btn" style={{ color: c.inkSoft }} onClick={() => setPhase("manual")}>{t.manualLoc}</button>
-          </>
+          <div className="loc-features">
+            <div className="loc-feat-card" style={{ background: c.surface, borderColor: c.border }}>
+              <div className="loc-feat-icon" style={{ background: c.dangerSoft, color: c.danger }}>
+                <Siren size={18} />
+              </div>
+              <div className="loc-feat-text">
+                <span className="loc-feat-head" style={{ color: c.ink }}>Rapid SOS Response</span>
+                <span className="loc-feat-sub" style={{ color: c.inkSoft }}>Broadcasts exact coordinates to nearest responders</span>
+              </div>
+            </div>
+
+            <div className="loc-feat-card" style={{ background: c.surface, borderColor: c.border }}>
+              <div className="loc-feat-icon" style={{ background: c.safeSoft, color: c.safe }}>
+                <Building2 size={18} />
+              </div>
+              <div className="loc-feat-text">
+                <span className="loc-feat-head" style={{ color: c.ink }}>Verified Safe Shelters</span>
+                <span className="loc-feat-sub" style={{ color: c.inkSoft }}>Navigates to active relief camps, hospitals & police</span>
+              </div>
+            </div>
+
+            <div className="loc-feat-card" style={{ background: c.surface, borderColor: c.border }}>
+              <div className="loc-feat-icon" style={{ background: c.warnSoft, color: c.warn }}>
+                <AlertTriangle size={18} />
+              </div>
+              <div className="loc-feat-text">
+                <span className="loc-feat-head" style={{ color: c.ink }}>Localized Hazard Alerts</span>
+                <span className="loc-feat-sub" style={{ color: c.inkSoft }}>Instant flood, storm & seismic risk warnings</span>
+              </div>
+            </div>
+          </div>
         )}
-        {phase === "fetching" && <h2 style={{ color: c.ink }}>{t.fetchingLoc}</h2>}
-        {phase === "found" && <h2 style={{ color: c.ink }}>{t.locFound}</h2>}
+
+        {/* Manual Input Mode Form */}
         {phase === "manual" && (
-          <>
-            <h2 style={{ color: c.ink }}>{t.manualLoc}</h2>
+          <div className="manual-loc-card" style={{ background: c.surface, borderColor: c.border }}>
+            <label style={{ fontSize: "0.8125rem", fontWeight: 700, color: c.ink, fontFamily: "'Manrope', sans-serif" }}>
+              Enter City, Town, or Village
+            </label>
             <input
               className="manual-loc-input"
-              placeholder="Enter city / area / village"
+              placeholder="e.g. Vijayawada, Guntur, Hyderabad"
               value={manualText}
               onChange={(e) => setManualText(e.target.value)}
-              style={{ borderColor: c.border, color: c.ink, background: c.surface }}
+              style={{ borderColor: c.border, color: c.ink, background: c.surfaceAlt }}
+              autoFocus
             />
             <button
               className="primary-btn"
               disabled={!manualText.trim()}
-              style={{ background: manualText.trim() ? c.primary : c.border, color: "#fff" }}
-              onClick={() => onDone(manualText.trim())}
+              style={{ background: manualText.trim() ? c.primary : c.border, color: "#fff", height: 42 }}
+              onClick={() => onDone({ lat: null, lng: null, accuracy: null, timestamp: Date.now(), label: manualText.trim(), source: "manual" })}
             >
               {t.continueApp}
             </button>
-          </>
+            <p className="fine-print" style={{ color: c.inkSoft, textAlign: "center", margin: 0 }}>
+              Note: Live map pins and distance calculations require real GPS.
+            </p>
+          </div>
         )}
+
+        {/* Action Buttons Section - Docked cleanly at bottom */}
+        <div className="loc-actions">
+          {phase === "asking" && (
+            <>
+              <button
+                className="primary-btn loc-allow-btn"
+                style={{ background: c.primary, color: "#fff" }}
+                onClick={runLocate}
+              >
+                <LocateFixed size={18} />
+                <span>Allow while using app</span>
+              </button>
+              <button
+                className="text-btn"
+                style={{ color: c.inkSoft, marginTop: 2 }}
+                onClick={() => setPhase("manual")}
+              >
+                {t.manualLoc}
+              </button>
+              <span className="loc-privacy-note" style={{ color: c.inkSoft }}>
+                🔒 Coordinates are encrypted and only used for emergency relief.
+              </span>
+            </>
+          )}
+
+          {phase === "error" && (
+            <>
+              <button
+                className="primary-btn loc-allow-btn"
+                style={{ background: c.primary, color: "#fff" }}
+                onClick={runLocate}
+              >
+                <RefreshCw size={17} />
+                <span>Try GPS Again</span>
+              </button>
+              <button
+                className="text-btn"
+                style={{ color: c.inkSoft }}
+                onClick={() => setPhase("manual")}
+              >
+                {t.manualLoc}
+              </button>
+            </>
+          )}
+
+          {phase === "manual" && (
+            <button
+              className="text-btn"
+              style={{ color: c.primary, display: "inline-flex", alignItems: "center", gap: 5 }}
+              onClick={runLocate}
+            >
+              <LocateFixed size={15} />
+              <span>Use Device GPS Instead</span>
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -468,16 +668,29 @@ function LocationScreen({ c, t, onDone }) {
 /* =========================================================================
    HEADER / BOTTOM NAV
    ========================================================================= */
-function AppHeader({ c, t, location, onOpenContacts, onOpenMenu }) {
+function locationDisplayLabel(location) {
+  if (!location) return "Location unavailable";
+  if (location.source === "manual") return location.label || "Location unavailable";
+  if (location.lat == null) return "Location unavailable";
+  return location.label || "Address unavailable";
+}
+
+function AppHeader({ c, t, location, locating, isOnline = true, onOpenContacts, onOpenMenu, onRefreshLocation }) {
   return (
     <div className="app-header" style={{ background: c.primary }}>
-      <div className="header-loc">
+      <button className="header-loc" onClick={onRefreshLocation} title="Use my current location">
         <MapPin size={16} color={c.headerText} />
         <div className="header-loc-text">
-          <span className="header-loc-label" style={{ color: "rgba(255,255,255,0.7)" }}>{t.currentLocation}</span>
-          <span className="header-loc-value" style={{ color: c.headerText }}>{location}</span>
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span className="header-loc-label" style={{ color: "rgba(255,255,255,0.7)" }}>{t.currentLocation}</span>
+            <span style={{ fontSize: "0.58rem", fontWeight: 800, padding: "1px 5px", borderRadius: 6, background: isOnline ? "rgba(18,128,95,0.45)" : "rgba(214,40,40,0.55)", color: "#fff", letterSpacing: "0.04em" }}>
+              {isOnline ? "● ONLINE" : "● OFFLINE"}
+            </span>
+          </div>
+          <span className="header-loc-value" style={{ color: c.headerText }}>{locating ? "Updating…" : locationDisplayLabel(location)}</span>
         </div>
-      </div>
+        {locating ? <Loader2 size={14} className="spin" color="rgba(255,255,255,0.85)" /> : <LocateFixed size={14} color="rgba(255,255,255,0.7)" />}
+      </button>
       <button className="header-mid" onClick={onOpenContacts} style={{ color: c.headerText, borderColor: "rgba(255,255,255,0.25)" }}>
         <Users size={16} />
         <span>{t.contacts}</span>
@@ -526,15 +739,319 @@ function BottomNav({ c, t, active, setActive }) {
 /* =========================================================================
    MAPS MODULE
    ========================================================================= */
-function MapsScreen({ c }) {
+function RecenterMap({ lat, lng }) {
+  const map = useMap();
+  useEffect(() => { map.setView([lat, lng], map.getZoom()); }, [lat, lng, map]);
+  return null;
+}
+
+function LocationEmptyState({ c, locating, onRefreshLocation, title = "Location unavailable", body = "Enable device location to see the live map and nearby emergency facilities." }) {
+  return (
+    <div className="module-screen">
+      <div className="loc-empty-state" style={{ background: c.surface, borderColor: c.border }}>
+        <LocateFixed size={28} color={c.primary} />
+        <h3 style={{ color: c.ink }}>{title}</h3>
+        <p style={{ color: c.inkSoft }}>{body}</p>
+        <button className="primary-btn" style={{ background: c.primary, color: "#fff" }} onClick={onRefreshLocation} disabled={locating}>
+          {locating ? <Loader2 size={16} className="spin" /> : <LocateFixed size={16} />}
+          <span>Use My Current Location</span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* =========================================================================
+   LIVE WEATHER & FLOOD HAZARD SHEET
+   ========================================================================= */
+function WeatherHazardSheet({ c, open, onClose, weatherData, weatherLoading, onRefreshWeather }) {
+  if (!open) return null;
+
+  const hazardColors = {
+    safe: c.safe,
+    low: c.safe,
+    warn: c.warn,
+    danger: c.danger,
+    critical: c.critical,
+  };
+
+  const hazardBg = {
+    safe: c.safeSoft,
+    low: c.safeSoft,
+    warn: c.warnSoft,
+    danger: c.dangerSoft,
+    critical: c.dangerSoft,
+  };
+
+  const level = weatherData?.hazardLevel || "safe";
+  const badgeColor = hazardColors[level] || c.safe;
+  const badgeBg = hazardBg[level] || c.safeSoft;
+
+  return (
+    <Sheet open={open} onClose={onClose} title="Live Weather & Flood Advisory" height="85vh">
+      {weatherLoading ? (
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", padding: 30, gap: 12 }}>
+          <Loader2 size={30} className="spin" color={c.primary} />
+          <p style={{ color: c.inkSoft }}>Fetching real-time atmospheric data from Open-Meteo…</p>
+        </div>
+      ) : weatherData ? (
+        <div className="weather-detail-wrap">
+          <div className="hazard-hero" style={{ background: badgeBg, border: `1.5px solid ${badgeColor}`, borderRadius: 16, padding: 14, marginBottom: 14 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <CloudLightning size={26} color={badgeColor} />
+              <div>
+                <span className="hazard-badge-tag" style={{ background: badgeColor, color: "#fff", fontSize: "0.6875rem", fontWeight: 800, padding: "2px 8px", borderRadius: 8, textTransform: "uppercase" }}>
+                  {level} Alert
+                </span>
+                <h3 style={{ color: c.ink, fontSize: "1rem", marginTop: 4 }}>{weatherData.hazardTitle}</h3>
+              </div>
+            </div>
+            <p style={{ color: c.ink, marginTop: 8, fontSize: "0.8125rem", lineHeight: 1.4 }}>
+              {weatherData.hazardDescription}
+            </p>
+          </div>
+
+          <div className="hazard-metric-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }}>
+            <div className="hazard-metric-card" style={{ background: c.surface, border: `1px solid ${c.border}`, borderRadius: 14, padding: 12, display: "flex", flexDirection: "column", gap: 4 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <Thermometer size={16} color={c.primary} />
+                <span style={{ fontSize: "0.75rem", color: c.inkSoft }}>Temperature</span>
+              </div>
+              <span style={{ fontSize: "1.25rem", fontWeight: 800, color: c.ink }}>{weatherData.temp}°C</span>
+              <span style={{ fontSize: "0.75rem", color: c.inkSoft }}>Feels like {weatherData.feelsLike}°C</span>
+            </div>
+
+            <div className="hazard-metric-card" style={{ background: c.surface, border: `1px solid ${c.border}`, borderRadius: 14, padding: 12, display: "flex", flexDirection: "column", gap: 4 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <Droplets size={16} color={weatherData.rain > 5 ? c.danger : c.primary} />
+                <span style={{ fontSize: "0.75rem", color: c.inkSoft }}>Precipitation</span>
+              </div>
+              <span style={{ fontSize: "1.25rem", fontWeight: 800, color: weatherData.rain > 5 ? c.danger : c.ink }}>{weatherData.rain} <span style={{ fontSize: "0.8125rem" }}>mm/h</span></span>
+              <span style={{ fontSize: "0.75rem", color: c.inkSoft }}>{weatherData.condition}</span>
+            </div>
+
+            <div className="hazard-metric-card" style={{ background: c.surface, border: `1px solid ${c.border}`, borderRadius: 14, padding: 12, display: "flex", flexDirection: "column", gap: 4 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <Wind size={16} color={weatherData.windSpeed > 30 ? c.warn : c.primary} />
+                <span style={{ fontSize: "0.75rem", color: c.inkSoft }}>Wind Speed</span>
+              </div>
+              <span style={{ fontSize: "1.25rem", fontWeight: 800, color: c.ink }}>{weatherData.windSpeed} <span style={{ fontSize: "0.8125rem" }}>km/h</span></span>
+              <span style={{ fontSize: "0.75rem", color: c.inkSoft }}>Gusts {weatherData.windGusts} km/h</span>
+            </div>
+
+            <div className="hazard-metric-card" style={{ background: c.surface, border: `1px solid ${c.border}`, borderRadius: 14, padding: 12, display: "flex", flexDirection: "column", gap: 4 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <CloudRain size={16} color={c.primary} />
+                <span style={{ fontSize: "0.75rem", color: c.inkSoft }}>Humidity</span>
+              </div>
+              <span style={{ fontSize: "1.25rem", fontWeight: 800, color: c.ink }}>{weatherData.humidity}%</span>
+              <span style={{ fontSize: "0.75rem", color: c.inkSoft }}>Relative level</span>
+            </div>
+          </div>
+
+          <div className="section-heading" style={{ color: c.ink, marginTop: 10, fontSize: "0.9375rem" }}>
+            Disaster Preparedness Directives
+          </div>
+          <div style={{ color: c.inkSoft, fontSize: "0.8125rem", lineHeight: 1.5, display: "flex", flexDirection: "column", gap: 6, marginBottom: 14 }}>
+            {weatherData.rain > 10 ? (
+              <>
+                <p>• <b>Avoid low-lying routes:</b> Flash flood risk is elevated. Keep clear of underground canals and underpasses.</p>
+                <p>• <b>Charge power sources:</b> Severe weather may disrupt grid power. Maintain device charge above 80%.</p>
+                <p>• <b>Shelter availability:</b> Check the Shelter tab to review pre-mapped emergency shelters.</p>
+              </>
+            ) : (
+              <>
+                <p>• <b>Normal conditions:</b> Atmospheric stability is within standard parameters with low disaster hazard.</p>
+                <p>• <b>Emergency preparedness:</b> Always keep offline survival protocols handy in the Menu tab.</p>
+              </>
+            )}
+          </div>
+
+          <button
+            className="secondary-btn"
+            onClick={onRefreshWeather}
+            style={{ width: "100%", borderColor: c.border, color: c.ink }}
+          >
+            <RefreshCw size={15} />&nbsp;Refresh Live Weather
+          </button>
+        </div>
+      ) : (
+        <div style={{ textAlign: "center", padding: 20 }}>
+          <p style={{ color: c.inkSoft }}>Weather intelligence is unavailable. Ensure location is enabled.</p>
+        </div>
+      )}
+    </Sheet>
+  );
+}
+
+/* =========================================================================
+   OFFLINE SURVIVAL GUIDES SHEET
+   ========================================================================= */
+function SurvivalGuidesSheet({ c, open, onClose }) {
+  const [selectedGuide, setSelectedGuide] = useState(SURVIVAL_GUIDES[0]);
+  if (!open) return null;
+
+  return (
+    <Sheet open={open} onClose={onClose} title="Offline Survival Protocols" height="85vh">
+      <div className="chip-row" style={{ marginBottom: 12 }}>
+        {SURVIVAL_GUIDES.map((g) => (
+          <button
+            key={g.id}
+            className="chip"
+            onClick={() => setSelectedGuide(g)}
+            style={{
+              background: selectedGuide.id === g.id ? c.primary : c.surface,
+              color: selectedGuide.id === g.id ? "#fff" : c.ink,
+              borderColor: selectedGuide.id === g.id ? c.primary : c.border,
+            }}
+          >
+            {g.title}
+          </button>
+        ))}
+      </div>
+
+      <div style={{ background: c.surface, border: `1px solid ${c.border}`, borderRadius: 16, padding: 14 }}>
+        <h3 style={{ color: c.ink, fontSize: "1.0625rem", marginBottom: 4 }}>{selectedGuide.title}</h3>
+        <p style={{ color: c.inkSoft, fontSize: "0.8125rem", marginBottom: 14 }}>{selectedGuide.summary}</p>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {selectedGuide.steps.map((step, idx) => (
+            <div key={idx} style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+              <div style={{ width: 22, height: 22, borderRadius: "50%", background: c.primarySoft, color: c.primary, display: "flex", alignItems: "center", justifyContent: "center", fontSize: "0.75rem", fontWeight: 700, flexShrink: 0, marginTop: 1 }}>
+                {idx + 1}
+              </div>
+              <span style={{ color: c.ink, fontSize: "0.8125rem", lineHeight: 1.45 }}>{step}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </Sheet>
+  );
+}
+
+function MapsScreen({
+  c,
+  location,
+  facilities,
+  facilitiesStatus,
+  facilitiesFromCache,
+  locating,
+  onRefreshLocation,
+  weatherData,
+  onOpenWeather,
+  mapCacheStatus,
+  cachingMap,
+  mapProgress,
+  onCacheAreaMap,
+  facilitiesCachedAt,
+}) {
   const [filter, setFilter] = useState("all");
   const [selected, setSelected] = useState(null);
-  const filtered = filter === "all" ? FACILITIES : FACILITIES.filter((f) => f.type === filter);
+  const hasCoords = location?.lat != null && location?.lng != null;
+
+  if (!hasCoords) {
+    return <LocationEmptyState c={c} locating={locating} onRefreshLocation={onRefreshLocation} />;
+  }
+
+  const availableTypes = Array.from(new Set(facilities.map((f) => f.type)));
+  const filtered = filter === "all" ? facilities : facilities.filter((f) => f.type === filter);
 
   return (
     <div className="module-screen">
+      {/* Live Continuous Location Card */}
+      <div style={{ background: c.surface, border: `1.5px solid ${c.border}`, borderRadius: 16, padding: "12px 14px", marginBottom: 12 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+          <span style={{ fontSize: "0.6875rem", fontWeight: 800, letterSpacing: "0.06em", color: c.inkSoft }}>LIVE LOCATION</span>
+          <span style={{
+            fontSize: "0.7188rem", fontWeight: 700, padding: "2px 8px", borderRadius: 8,
+            background: location?.status === "Active" ? c.safeSoft : location?.status === "Low Accuracy" ? c.warnSoft : c.dangerSoft,
+            color: location?.status === "Active" ? c.safe : location?.status === "Low Accuracy" ? c.warn : c.danger,
+            display: "inline-flex", alignItems: "center", gap: 4
+          }}>
+            ● {location?.status === "Active" ? "Location Active" : location?.status === "Low Accuracy" ? "Low Accuracy" : location?.status || "Acquiring"}
+          </span>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "6px 12px", fontSize: "0.8125rem" }}>
+          <div><span style={{ color: c.inkSoft }}>Latitude:</span> <b style={{ color: c.ink, fontFamily: "monospace" }}>{location?.lat != null ? location.lat.toFixed(6) : "—"}</b></div>
+          <div><span style={{ color: c.inkSoft }}>Longitude:</span> <b style={{ color: c.ink, fontFamily: "monospace" }}>{location?.lng != null ? location.lng.toFixed(6) : "—"}</b></div>
+          <div><span style={{ color: c.inkSoft }}>Accuracy:</span> <b style={{ color: c.ink }}>{location?.accuracy != null ? `±${Math.round(location.accuracy)} m` : "—"}</b></div>
+          <div><span style={{ color: c.inkSoft }}>Updated:</span> <b style={{ color: c.ink }}>{location?.timestamp ? "Live (continuous)" : "Just now"}</b></div>
+        </div>
+      </div>
+
+      {/* Offline Area Map Cache Card */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, background: c.surface, border: `1px solid ${c.border}`, padding: "8px 12px", borderRadius: 12 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: "0.7812rem" }}>
+          <MapIcon size={16} color={c.primary} />
+          <div>
+            <span style={{ fontWeight: 700, color: c.ink, display: "block" }}>
+              {mapCacheStatus?.isCached ? "Emergency Area Map Cached" : "Offline Map Cache"}
+            </span>
+            <span style={{ fontSize: "0.6875rem", color: c.inkSoft }}>
+              {cachingMap ? `Caching tiles: ${mapProgress?.loaded || 0}/${mapProgress?.total || 0}…` : mapCacheStatus?.isCached ? `${mapCacheStatus.meta?.cachedTiles || 0} local tiles stored offline` : "Cache map for offline emergency use"}
+            </span>
+          </div>
+        </div>
+        <button
+          className="secondary-btn small"
+          disabled={cachingMap || !location?.lat}
+          onClick={onCacheAreaMap}
+          style={{ borderColor: c.primary, color: c.primary, padding: "5px 10px", fontSize: "0.7188rem", display: "flex", alignItems: "center", gap: 4 }}
+        >
+          {cachingMap ? <Loader2 size={12} className="spin" /> : mapCacheStatus?.isCached ? <Check size={12} /> : <Download size={12} />}
+          <span>{cachingMap ? "Caching…" : mapCacheStatus?.isCached ? "Re-cache" : "Cache Area"}</span>
+        </button>
+      </div>
+
+      {/* Offline Facilities Cache Notice */}
+      {facilitiesFromCache && (
+        <div style={{ display: "flex", alignItems: "center", gap: 6, background: c.warnSoft, borderRadius: 10, padding: "6px 10px", marginBottom: 10, fontSize: "0.75rem", color: c.warn, fontWeight: 600 }}>
+          <WifiOff size={13} style={{ flexShrink: 0 }} />
+          Facilities loaded from offline cache — go online to refresh
+        </div>
+      )}
+
+      {/* Live Weather & Flood Hazard Banner */}
+      {weatherData && (
+        <button
+          className="weather-hazard-pill"
+          onClick={onOpenWeather}
+          style={{
+            background: weatherData.hazardLevel === "danger" || weatherData.hazardLevel === "critical" ? c.dangerSoft : c.surface,
+            border: `1.5px solid ${weatherData.hazardLevel === "danger" || weatherData.hazardLevel === "critical" ? c.danger : c.border}`,
+            borderRadius: 14,
+            padding: "10px 12px",
+            marginBottom: 12,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            width: "100%",
+            cursor: "pointer",
+            textAlign: "left"
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0, overflow: "hidden" }}>
+            {weatherData.hazardLevel === "danger" || weatherData.hazardLevel === "critical" ? (
+              <AlertTriangle size={17} color={c.danger} style={{ flexShrink: 0 }} />
+            ) : (
+              <CloudRain size={17} color={c.primary} style={{ flexShrink: 0 }} />
+            )}
+            <div style={{ minWidth: 0, overflow: "hidden" }}>
+              <div style={{ fontSize: "0.8125rem", fontWeight: 700, color: weatherData.hazardLevel === "danger" || weatherData.hazardLevel === "critical" ? c.danger : c.ink, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                {weatherData.isCached ? "Last Known Weather" : weatherData.hazardTitle}
+                {weatherData.isCached && <span style={{ fontSize: "0.6875rem", fontWeight: 600, color: c.warn, marginLeft: 6 }}>[Cached Offline]</span>}
+              </div>
+              <div style={{ fontSize: "0.6875rem", color: c.inkSoft }}>
+                {weatherData.temp}°C · {weatherData.rain > 0 ? `Rain ${weatherData.rain} mm/h` : weatherData.condition}
+                {weatherData.isCached ? ` · Cached: ${new Date(weatherData.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : " · Live"}
+              </div>
+            </div>
+          </div>
+          <ChevronRight size={16} color={c.inkSoft} style={{ flexShrink: 0 }} />
+        </button>
+      )}
+
       <div className="chip-row">
-        {["all", ...Object.keys(FACILITY_META)].map((k) => (
+        {["all", ...availableTypes].map((k) => (
           <button
             key={k}
             className="chip"
@@ -545,58 +1062,84 @@ function MapsScreen({ c }) {
               borderColor: filter === k ? c.primary : c.border,
             }}
           >
-            {k === "all" ? "All" : FACILITY_META[k].label}
+            {k === "all" ? "All" : FACILITY_META[k]?.label ?? k}
           </button>
         ))}
+        <div style={{ flex: 1 }} />
+        <button className="map-refresh-btn" onClick={onRefreshLocation} disabled={locating} title="Use my current location" style={{ color: c.primary, borderColor: c.border }}>
+          {locating ? <Loader2 size={16} className="spin" /> : <LocateFixed size={16} />}
+        </button>
       </div>
 
-      <div className="map-canvas" style={{ background: c.surfaceAlt, borderColor: c.border }}>
-        <svg viewBox="0 0 100 100" className="map-grid-svg">
-          {Array.from({ length: 9 }).map((_, i) => (
-            <line key={"v" + i} x1={i * 12.5} y1="0" x2={i * 12.5} y2="100" stroke={c.border} strokeWidth="0.3" />
-          ))}
-          {Array.from({ length: 9 }).map((_, i) => (
-            <line key={"h" + i} x1="0" y1={i * 12.5} x2="100" y2={i * 12.5} stroke={c.border} strokeWidth="0.3" />
-          ))}
-        </svg>
-        <div className="user-dot-wrap" style={{ left: "50%", top: "48%" }}>
-          <div className="user-dot-ring" style={{ borderColor: c.primary }} />
-          <div className="user-dot" style={{ background: c.primary }} />
-        </div>
-        {filtered.map((f) => {
-          const meta = FACILITY_META[f.type];
-          const Icon = meta.icon;
-          const color = c[meta.color] || c.primary;
-          return (
-            <button
-              key={f.id}
-              className="map-marker"
-              style={{ left: f.x + "%", top: f.y + "%", background: color }}
-              onClick={() => setSelected(f)}
-              aria-label={f.name}
-            >
-              <Icon size={13} color="#fff" />
-            </button>
-          );
-        })}
-        <div className="map-zoom-controls">
-          <button className="map-zoom-btn" style={{ background: c.surface, color: c.ink }}>+</button>
-          <button className="map-zoom-btn" style={{ background: c.surface, color: c.ink }}>−</button>
-        </div>
+      <div className="leaflet-wrap" style={{ borderColor: c.border, height: 190 }}>
+        <MapContainer center={[location.lat, location.lng]} zoom={14} scrollWheelZoom={false} style={{ height: "100%", width: "100%" }}>
+          <TileLayer
+            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+          />
+          <RecenterMap lat={location.lat} lng={location.lng} />
+          {location.accuracy && (
+            <Circle
+              center={[location.lat, location.lng]}
+              radius={location.accuracy}
+              pathOptions={{
+                color: c.primary,
+                fillColor: c.primary,
+                fillOpacity: 0.12,
+                weight: 1.5,
+              }}
+            />
+          )}
+          <Marker position={[location.lat, location.lng]} icon={youAreHereIcon(c.primary)}>
+            <Popup>
+              <b>Your current location</b><br />
+              Status: {location.status || "Active"}<br />
+              Accuracy: {location.accuracy ? `±${Math.round(location.accuracy)} m` : "Normal"}
+            </Popup>
+          </Marker>
+          {filtered.map((f) => {
+            const meta = FACILITY_META[f.type];
+            const color = c[meta?.color] || c.primary;
+            return (
+              <Marker key={f.id} position={[f.lat, f.lng]} icon={coloredDotIcon(color)} eventHandlers={{ click: () => setSelected(f) }}>
+                <Popup>{f.name}</Popup>
+              </Marker>
+            );
+          })}
+        </MapContainer>
       </div>
 
-      <div className="section-heading" style={{ color: c.ink }}>Nearby emergency facilities</div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+        <div className="section-heading" style={{ color: c.ink, margin: 0 }}>Nearby emergency facilities</div>
+        {facilitiesCachedAt && (
+          <span style={{ fontSize: "0.6875rem", fontWeight: 700, color: c.inkSoft, background: c.surfaceAlt, padding: "3px 8px", borderRadius: 8 }}>
+            Cached: {new Date(facilitiesCachedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+          </span>
+        )}
+      </div>
+
+      {facilitiesStatus === "loading" && <p className="fine-print" style={{ color: c.inkSoft, marginBottom: 12 }}>Loading nearby facilities from OpenStreetMap…</p>}
+      {facilitiesStatus === "error" && (
+        <p className="fine-print passkey-error" style={{ color: c.danger, marginBottom: 12 }}>
+          <ShieldAlert size={13} className="inline-icon" />
+          Couldn't load nearby facilities. Check your connection and try refreshing your location.
+        </p>
+      )}
+      {facilitiesStatus === "ready" && filtered.length === 0 && (
+        <p className="fine-print" style={{ color: c.inkSoft, marginBottom: 12 }}>No mapped facilities of this type found nearby on OpenStreetMap.</p>
+      )}
+
       <div className="list-col">
         {filtered.map((f) => {
           const meta = FACILITY_META[f.type];
-          const Icon = meta.icon;
-          const color = c[meta.color] || c.primary;
+          const Icon = meta?.icon || Building2;
+          const color = c[meta?.color] || c.primary;
           return (
             <button key={f.id} className="facility-row" style={{ background: c.surface, borderLeftColor: color }} onClick={() => setSelected(f)}>
               <div className="facility-icon" style={{ background: color + "1A" }}><Icon size={18} color={color} /></div>
               <div className="facility-info">
                 <span className="facility-name" style={{ color: c.ink }}>{f.name}</span>
-                <span className="facility-sub" style={{ color: c.inkSoft }}>{meta.label} · {f.distance}</span>
+                <span className="facility-sub" style={{ color: c.inkSoft }}>{meta?.label ?? f.type} · {f.distanceKm.toFixed(1)} km</span>
               </div>
               <ChevronRight size={18} color={c.inkSoft} />
             </button>
@@ -604,15 +1147,28 @@ function MapsScreen({ c }) {
         })}
       </div>
 
-      <Sheet open={!!selected} onClose={() => setSelected(null)} title={selected ? FACILITY_META[selected.type].label : ""}>
+      <Sheet open={!!selected} onClose={() => setSelected(null)} title={selected ? (FACILITY_META[selected.type]?.label ?? selected.type) : ""}>
         {selected && (
           <div className="facility-detail">
             <h3 style={{ color: c.ink }}>{selected.name}</h3>
-            <div className="detail-row"><MapPin size={16} color={c.inkSoft} /><span style={{ color: c.inkSoft }}>{selected.address} · {selected.distance}</span></div>
-            <div className="detail-row"><Phone size={16} color={c.inkSoft} /><span style={{ color: c.inkSoft }}>{selected.phone}</span></div>
+            <div className="detail-row"><MapPin size={16} color={c.inkSoft} /><span style={{ color: c.inkSoft }}>{selected.address || "Address unavailable"} · {selected.distanceKm.toFixed(1)} km</span></div>
+            <div className="detail-row"><Phone size={16} color={c.inkSoft} /><span style={{ color: c.inkSoft }}>{selected.phone || "Phone number not listed on OpenStreetMap"}</span></div>
             <div className="detail-actions">
-              <button className="primary-btn flex1" style={{ background: c.primary, color: "#fff" }}><Navigation2 size={16} />&nbsp;Directions</button>
-              <button className="secondary-btn flex1" style={{ borderColor: c.border, color: c.ink }}><PhoneCall size={16} />&nbsp;Call</button>
+              <a
+                className="primary-btn flex1" style={{ background: c.primary, color: "#fff", textDecoration: "none" }}
+                href={`https://www.google.com/maps/dir/?api=1&destination=${selected.lat},${selected.lng}`} target="_blank" rel="noreferrer"
+              >
+                <Navigation2 size={16} />&nbsp;Directions
+              </a>
+              {selected.phone ? (
+                <a className="secondary-btn flex1" style={{ borderColor: c.border, color: c.ink, textDecoration: "none" }} href={`tel:${selected.phone}`}>
+                  <PhoneCall size={16} />&nbsp;Call
+                </a>
+              ) : (
+                <button className="secondary-btn flex1" style={{ borderColor: c.border, color: c.inkSoft }} disabled>
+                  <PhoneCall size={16} />&nbsp;No number
+                </button>
+              )}
             </div>
           </div>
         )}
@@ -624,7 +1180,7 @@ function MapsScreen({ c }) {
 /* =========================================================================
    REPORT MODULE
    ========================================================================= */
-function ReportScreen({ c, location }) {
+function ReportScreen({ c, location, isOnline = true, onQueueReport }) {
   const [step, setStep] = useState(1);
   const [type, setType] = useState(null);
   const [description, setDescription] = useState("");
@@ -635,6 +1191,7 @@ function ReportScreen({ c, location }) {
   const [recipients, setRecipients] = useState([]);
   const [submitted, setSubmitted] = useState(null);
   const timerRef = useRef(null);
+  const locationLabel = locationDisplayLabel(location);
 
   useEffect(() => {
     if (type && step === 3) setRecipients(RECIPIENTS_BY_TYPE[type.id] || []);
@@ -661,17 +1218,47 @@ function ReportScreen({ c, location }) {
 
   const submit = () => {
     const id = "RN-" + Math.floor(10000 + Math.random() * 89999);
-    setSubmitted({ id, type, description, severity, location, recipients, time: "Just now" });
+    const reportObj = {
+      id,
+      type,
+      description,
+      severity,
+      locationLabel,
+      location,
+      recipients,
+      time: "Just now",
+      status: 0,
+      authority: AUTHORITY_FOR[type?.id] || "Disaster Management Authority",
+      isOffline: !isOnline,
+    };
+
+    if (!isOnline && onQueueReport) {
+      onQueueReport(reportObj);
+    }
+    setSubmitted(reportObj);
   };
 
   if (submitted) {
+    const reportMsg = generateReportMessage({
+      id: submitted.id,
+      type: submitted.type,
+      severity: submitted.severity,
+      description: submitted.description,
+      location,
+    });
+
     return (
       <div className="module-screen">
-        <div className="confirm-hero" style={{ background: c.safeSoft }}>
-          <CheckCircle2 size={40} color={c.safe} />
-          <h2 style={{ color: c.ink }}>Report submitted</h2>
+        <div className="confirm-hero" style={{ background: submitted.isOffline ? c.warnSoft : c.safeSoft }}>
+          <CheckCircle2 size={40} color={submitted.isOffline ? c.warn : c.safe} />
+          <h2 style={{ color: c.ink }}>{submitted.isOffline ? "Report Stored Offline" : "Report submitted"}</h2>
           <p style={{ color: c.inkSoft }}>Report ID</p>
           <span className="report-id" style={{ color: c.ink }}>{submitted.id}</span>
+          {submitted.isOffline && (
+            <p style={{ color: c.warn, fontSize: "0.75rem", fontWeight: 700, marginTop: 4 }}>
+              📡 Queued locally. Will auto-dispatch when network connectivity is restored.
+            </p>
+          )}
         </div>
         <div className="status-track">
           {STATUS_STEPS.map((s, i) => (
@@ -685,11 +1272,30 @@ function ReportScreen({ c, location }) {
           ))}
         </div>
         <div className="summary-card" style={{ background: c.surface, borderColor: c.border }}>
-          <div className="summary-line"><span style={{ color: c.inkSoft }}>Type</span><span style={{ color: c.ink }}>{submitted.type.label}</span></div>
+          <div className="summary-line"><span style={{ color: c.inkSoft }}>Type</span><span style={{ color: c.ink }}>{submitted.type?.label}</span></div>
           <div className="summary-line"><span style={{ color: c.inkSoft }}>Severity</span><span style={{ color: c.ink }}>{SEVERITIES.find(s => s.id === submitted.severity)?.label}</span></div>
-          <div className="summary-line"><span style={{ color: c.inkSoft }}>Location</span><span style={{ color: c.ink }}>{submitted.location}</span></div>
+          <div className="summary-line"><span style={{ color: c.inkSoft }}>Location</span><span style={{ color: c.ink }}>{submitted.locationLabel}</span></div>
           <div className="summary-line"><span style={{ color: c.inkSoft }}>Sent to</span><span style={{ color: c.ink, textAlign: "right" }}>{submitted.recipients.join(", ")}</span></div>
         </div>
+
+        {/* Share via WhatsApp and SMS */}
+        <div style={{ display: "flex", gap: 10, marginBottom: 12 }}>
+          <button
+            className="secondary-btn flex1"
+            style={{ borderColor: "#25D366", color: "#25D366" }}
+            onClick={() => openWhatsApp(null, reportMsg)}
+          >
+            <Share2 size={16} />&nbsp;WhatsApp
+          </button>
+          <button
+            className="secondary-btn flex1"
+            style={{ borderColor: c.primary, color: c.primary }}
+            onClick={() => openSms(null, reportMsg)}
+          >
+            <Send size={16} />&nbsp;Send SMS
+          </button>
+        </div>
+
         <button className="primary-btn" style={{ background: c.primary, color: "#fff" }} onClick={reset}>File another report</button>
       </div>
     );
@@ -738,7 +1344,7 @@ function ReportScreen({ c, location }) {
           />
           <div className="detail-row" style={{ marginBottom: 12 }}>
             <MapPin size={16} color={c.inkSoft} />
-            <span style={{ color: c.inkSoft }}>{location} (auto-detected)</span>
+            <span style={{ color: c.inkSoft }}>{locationLabel} {location?.source === "gps" ? "(from device GPS)" : location?.source === "manual" ? "(manually entered)" : ""}</span>
           </div>
           <div className="field-label" style={{ color: c.inkSoft }}>Severity</div>
           <div className="severity-row">
@@ -774,7 +1380,7 @@ function ReportScreen({ c, location }) {
               }}
             >
               <Mic size={20} />
-              <span>{recording ? `${String(Math.floor(voiceSeconds/60)).padStart(2,"0")}:${String(voiceSeconds%60).padStart(2,"0")}` : media.voice ? "Recorded" : "Voice note"}</span>
+              <span>{recording ? `${String(Math.floor(voiceSeconds / 60)).padStart(2, "0")}:${String(voiceSeconds % 60).padStart(2, "0")}` : media.voice ? "Recorded" : "Voice note"}</span>
             </button>
           </div>
           <p className="fine-print" style={{ color: c.inkSoft }}>Recording a voice message helps when typing is difficult during a stressful situation.</p>
@@ -812,7 +1418,7 @@ function ReportScreen({ c, location }) {
           <div className="summary-card" style={{ background: c.surface, borderColor: c.border }}>
             <div className="summary-line"><span style={{ color: c.inkSoft }}>Emergency type</span><span style={{ color: c.ink }}>{type?.label}</span></div>
             <div className="summary-line"><span style={{ color: c.inkSoft }}>Description</span><span style={{ color: c.ink, textAlign: "right", maxWidth: 180 }}>{description}</span></div>
-            <div className="summary-line"><span style={{ color: c.inkSoft }}>Location</span><span style={{ color: c.ink }}>{location}</span></div>
+            <div className="summary-line"><span style={{ color: c.inkSoft }}>Location</span><span style={{ color: c.ink }}>{locationLabel}</span></div>
             <div className="summary-line"><span style={{ color: c.inkSoft }}>Severity</span><span style={{ color: c.ink }}>{SEVERITIES.find(s => s.id === severity)?.label}</span></div>
             <div className="summary-line"><span style={{ color: c.inkSoft }}>Media</span><span style={{ color: c.ink }}>{[media.photo && "Photo", media.video && "Video", media.voice && "Voice note"].filter(Boolean).join(", ") || "None"}</span></div>
             <div className="summary-line"><span style={{ color: c.inkSoft }}>Recipients</span><span style={{ color: c.ink, textAlign: "right", maxWidth: 180 }}>{recipients.join(", ")}</span></div>
@@ -830,9 +1436,10 @@ function ReportScreen({ c, location }) {
 /* =========================================================================
    SOS MODULE
    ========================================================================= */
-function SosScreen({ c, location, contacts }) {
+function SosScreen({ c, location, contacts, isOnline = true, phone = "", onQueueSos }) {
   const [category, setCategory] = useState(null);
   const [state, setState] = useState("idle"); // idle | pressing | sent
+  const [copiedLink, setCopiedLink] = useState(false);
 
   const categories = [
     { id: "medical", label: "Medical", icon: Stethoscope },
@@ -851,7 +1458,34 @@ function SosScreen({ c, location, contacts }) {
     earthquake: "Disaster Management Authority", safety: "Police Department", other: "Local Authority",
   }[id] || "Local Authority");
 
+  const handleTriggerSos = () => {
+    setState("sent");
+    const sosPayload = {
+      type: "SOS",
+      category,
+      location,
+      time: new Date().toISOString(),
+      contacts,
+      isOffline: !isOnline,
+    };
+    if (!isOnline && onQueueSos) {
+      onQueueSos(sosPayload);
+    }
+  };
+
   if (state === "sent") {
+    const sosMsg = generateSosMessage({ category, location, phone });
+    const primaryContact = contacts.find((c) => c.primary) || contacts[0];
+    const mapsLink = location?.lat != null ? `https://maps.google.com/?q=${location.lat},${location.lng}` : "";
+
+    const copyCoords = () => {
+      if (mapsLink) {
+        navigator.clipboard?.writeText(mapsLink);
+        setCopiedLink(true);
+        setTimeout(() => setCopiedLink(false), 2000);
+      }
+    };
+
     return (
       <div className="module-screen sos-sent">
         <div className="radar-wrap">
@@ -861,14 +1495,74 @@ function SosScreen({ c, location, contacts }) {
             <Siren size={30} color="#fff" />
           </div>
         </div>
-        <h2 style={{ color: c.ink, textAlign: "center" }}>SOS alert sent</h2>
-        <p style={{ color: c.inkSoft, textAlign: "center" }}>{authorityFor(category?.id)} has been notified with your live location.</p>
+        <h2 style={{ color: c.ink, textAlign: "center" }}>
+          {!isOnline ? "SOS Alert Stored Locally" : "SOS alert sent"}
+        </h2>
+        <p style={{ color: c.inkSoft, textAlign: "center" }}>
+          {!isOnline
+            ? "Network offline: Alert queued locally. Use WhatsApp or SMS below to transmit directly via cellular radio."
+            : `${authorityFor(category?.id)} has been notified with your live location.`}
+        </p>
+
+        {!isOnline && (
+          <div style={{ background: c.warnSoft, border: `1.5px solid ${c.warn}`, borderRadius: 12, padding: "8px 12px", width: "100%", textAlign: "center" }}>
+            <span style={{ color: c.warn, fontSize: "0.7812rem", fontWeight: 700 }}>
+              📡 Transmitting via offline queue when signal is found
+            </span>
+          </div>
+        )}
+
         <div className="summary-card" style={{ background: c.surface, borderColor: c.border, width: "100%" }}>
-          <div className="summary-line"><span style={{ color: c.inkSoft }}>Category</span><span style={{ color: c.ink }}>{category?.label}</span></div>
-          <div className="summary-line"><span style={{ color: c.inkSoft }}>Location</span><span style={{ color: c.ink }}>{location}</span></div>
-          <div className="summary-line"><span style={{ color: c.inkSoft }}>Notified contacts</span><span style={{ color: c.ink, textAlign: "right" }}>{contacts.length ? contacts.map(x=>x.name).join(", ") : "None saved"}</span></div>
+          <div className="summary-line"><span style={{ color: c.inkSoft }}>Category</span><span style={{ color: c.ink, fontWeight: 700 }}>{category?.label}</span></div>
+          <div className="summary-line"><span style={{ color: c.inkSoft }}>Location</span><span style={{ color: c.ink }}>{locationDisplayLabel(location)}</span></div>
+          <div className="summary-line"><span style={{ color: c.inkSoft }}>Target Contacts</span><span style={{ color: c.ink, textAlign: "right" }}>{contacts.length ? contacts.map(x => x.name).join(", ") : "None saved"}</span></div>
         </div>
-        <button className="secondary-btn" style={{ borderColor: c.border, color: c.ink, width: "100%" }} onClick={() => { setState("idle"); setCategory(null); }}>Cancel alert</button>
+
+        {/* Direct Dispatch Buttons */}
+        <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: 8 }}>
+          <button
+            className="primary-btn"
+            style={{ background: "#25D366", color: "#fff", fontWeight: 700 }}
+            onClick={() => openWhatsApp(primaryContact?.phone, sosMsg)}
+          >
+            <Share2 size={18} />
+            <span>Dispatch via WhatsApp {primaryContact ? `(${primaryContact.name})` : ""}</span>
+          </button>
+
+          <button
+            className="secondary-btn"
+            style={{ borderColor: c.primary, color: c.primary, fontWeight: 700 }}
+            onClick={() => openSms(primaryContact?.phone, sosMsg)}
+          >
+            <Send size={18} />
+            <span>Dispatch via Direct SMS</span>
+          </button>
+
+          {contacts.length > 1 && (
+            <button
+              className="secondary-btn"
+              style={{ borderColor: c.warn, color: c.warn, fontWeight: 700 }}
+              onClick={() => blastWhatsAppToContacts(contacts, sosMsg)}
+            >
+              <Users size={18} />
+              <span>Blast WhatsApp to All {contacts.length} Contacts</span>
+            </button>
+          )}
+
+          {mapsLink && (
+            <button
+              className="text-btn"
+              style={{ color: c.inkSoft, fontSize: "0.75rem", alignSelf: "center", marginTop: 4 }}
+              onClick={copyCoords}
+            >
+              {copiedLink ? "✓ GPS Maps Link Copied!" : "📋 Copy Live GPS Link"}
+            </button>
+          )}
+        </div>
+
+        <button className="secondary-btn" style={{ borderColor: c.border, color: c.inkSoft, width: "100%", marginTop: 8 }} onClick={() => { setState("idle"); setCategory(null); }}>
+          Cancel alert
+        </button>
       </div>
     );
   }
@@ -898,8 +1592,8 @@ function SosScreen({ c, location, contacts }) {
           onMouseUp={() => setState("idle")}
           onMouseLeave={() => state === "pressing" && setState("idle")}
           onTouchStart={() => setState("pressing")}
-          onTouchEnd={() => setState("sent")}
-          onClick={() => { if (state !== "pressing") setState("sent"); }}
+          onTouchEnd={() => handleTriggerSos()}
+          onClick={() => { if (state !== "pressing") handleTriggerSos(); }}
           disabled={!category}
         >
           <Siren size={38} color="#fff" />
@@ -916,57 +1610,80 @@ function SosScreen({ c, location, contacts }) {
 /* =========================================================================
    SHELTER MODULE
    ========================================================================= */
-function ShelterScreen({ c }) {
-  const [filter, setFilter] = useState("all");
+function ShelterScreen({ c, location, facilities, facilitiesStatus, facilitiesFromCache, locating, onRefreshLocation }) {
   const [view, setView] = useState("list");
   const [selected, setSelected] = useState(null);
-  const filtered = filter === "all" ? SHELTERS : SHELTERS.filter((s) => s.type === filter);
+  const hasCoords = location?.lat != null && location?.lng != null;
 
-  const statusColor = (status) => status === "Open" ? c.safe : status === "Limited" ? c.warn : c.danger;
+  if (!hasCoords) {
+    return (
+      <LocationEmptyState
+        c={c} locating={locating} onRefreshLocation={onRefreshLocation}
+        body="Enable device location to see real emergency shelters mapped nearby on OpenStreetMap."
+      />
+    );
+  }
+
+  const shelters = facilities.filter((f) => f.type === "shelter");
 
   return (
     <div className="module-screen">
       <div className="chip-row">
-        {[
-          { id: "all", label: "All" }, { id: "flood", label: "Flood" }, { id: "fire", label: "Fire" }, { id: "earthquake", label: "Earthquake" },
-        ].map((f) => (
-          <button key={f.id} className="chip" onClick={() => setFilter(f.id)} style={{ background: filter === f.id ? c.primary : c.surface, color: filter === f.id ? "#fff" : c.ink, borderColor: filter === f.id ? c.primary : c.border }}>
-            {f.label}
-          </button>
-        ))}
         <div style={{ flex: 1 }} />
+        <button className="map-refresh-btn" onClick={onRefreshLocation} disabled={locating} title="Use my current location" style={{ color: c.primary, borderColor: c.border }}>
+          {locating ? <Loader2 size={16} className="spin" /> : <LocateFixed size={16} />}
+        </button>
         <div className="view-toggle" style={{ borderColor: c.border }}>
           <button className={view === "list" ? "vt-active" : ""} style={{ background: view === "list" ? c.primary : "transparent", color: view === "list" ? "#fff" : c.ink }} onClick={() => setView("list")}>List</button>
           <button className={view === "map" ? "vt-active" : ""} style={{ background: view === "map" ? c.primary : "transparent", color: view === "map" ? "#fff" : c.ink }} onClick={() => setView("map")}>Map</button>
         </div>
       </div>
 
+      {facilitiesStatus === "loading" && <p className="fine-print" style={{ color: c.inkSoft, marginBottom: 12 }}>Loading nearby shelters from OpenStreetMap…</p>}
+      {facilitiesFromCache && facilitiesStatus === "ready" && (
+        <div style={{ display: "flex", alignItems: "center", gap: 6, background: c.warnSoft, borderRadius: 10, padding: "6px 10px", marginBottom: 10, fontSize: "0.75rem", color: c.warn, fontWeight: 600 }}>
+          <WifiOff size={13} style={{ flexShrink: 0 }} />
+          Showing cached shelter data (offline) — reconnect to refresh
+        </div>
+      )}
+      {facilitiesStatus === "error" && (
+        <p className="fine-print passkey-error" style={{ color: c.danger, marginBottom: 12 }}>
+          <ShieldAlert size={13} className="inline-icon" />
+          Couldn't load nearby shelters. Check your connection and try refreshing your location.
+        </p>
+      )}
+      {facilitiesStatus === "ready" && shelters.length === 0 && (
+        <p className="fine-print" style={{ color: c.inkSoft, marginBottom: 12 }}>
+          No emergency shelters are mapped on OpenStreetMap within range of your location yet. Check the Authority tab for official relief camp reports.
+        </p>
+      )}
+
       {view === "map" ? (
-        <div className="map-canvas" style={{ background: c.surfaceAlt, borderColor: c.border, height: 200 }}>
-          <svg viewBox="0 0 100 100" className="map-grid-svg">
-            {Array.from({ length: 9 }).map((_, i) => (<line key={"v"+i} x1={i*12.5} y1="0" x2={i*12.5} y2="100" stroke={c.border} strokeWidth="0.3" />))}
-            {Array.from({ length: 9 }).map((_, i) => (<line key={"h"+i} x1="0" y1={i*12.5} x2="100" y2={i*12.5} stroke={c.border} strokeWidth="0.3" />))}
-          </svg>
-          <div className="user-dot-wrap" style={{ left: "50%", top: "50%" }}>
-            <div className="user-dot-ring" style={{ borderColor: c.primary }} />
-            <div className="user-dot" style={{ background: c.primary }} />
-          </div>
-          {filtered.map((s, i) => (
-            <button key={s.id} className="map-marker" style={{ left: (20 + i * 15) + "%", top: (25 + (i % 3) * 20) + "%", background: statusColor(s.status) }} onClick={() => setSelected(s)}>
-              <Building2 size={13} color="#fff" />
-            </button>
-          ))}
+        <div className="leaflet-wrap" style={{ borderColor: c.border, height: 200 }}>
+          <MapContainer center={[location.lat, location.lng]} zoom={13} scrollWheelZoom={false} style={{ height: "100%", width: "100%" }}>
+            <TileLayer
+              attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+              url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+            />
+            <RecenterMap lat={location.lat} lng={location.lng} />
+            <Marker position={[location.lat, location.lng]} icon={youAreHereIcon(c.primary)}>
+              <Popup>Your current location</Popup>
+            </Marker>
+            {shelters.map((s) => (
+              <Marker key={s.id} position={[s.lat, s.lng]} icon={coloredDotIcon(c.safe)} eventHandlers={{ click: () => setSelected(s) }}>
+                <Popup>{s.name}</Popup>
+              </Marker>
+            ))}
+          </MapContainer>
         </div>
       ) : (
         <div className="list-col">
-          {filtered.map((s) => (
-            <button key={s.id} className="shelter-card" style={{ background: c.surface, borderLeftColor: statusColor(s.status) }} onClick={() => setSelected(s)}>
+          {shelters.map((s) => (
+            <button key={s.id} className="shelter-card" style={{ background: c.surface, borderLeftColor: c.safe }} onClick={() => setSelected(s)}>
               <div className="shelter-card-top">
                 <span className="facility-name" style={{ color: c.ink }}>{s.name}</span>
-                <span className="status-pill" style={{ background: statusColor(s.status) + "1A", color: statusColor(s.status) }}>{s.status}</span>
               </div>
-              <span className="facility-sub" style={{ color: c.inkSoft }}>{s.address} · {s.distance}</span>
-              <span className="facility-sub" style={{ color: c.inkSoft }}>Capacity {s.capacity}</span>
+              <span className="facility-sub" style={{ color: c.inkSoft }}>{s.address || "Address unavailable"} · {s.distanceKm.toFixed(1)} km</span>
             </button>
           ))}
         </div>
@@ -976,13 +1693,24 @@ function ShelterScreen({ c }) {
         {selected && (
           <div className="facility-detail">
             <h3 style={{ color: c.ink }}>{selected.name}</h3>
-            <span className="status-pill" style={{ background: statusColor(selected.status) + "1A", color: statusColor(selected.status), marginBottom: 10 }}>{selected.status}</span>
-            <div className="detail-row"><MapPin size={16} color={c.inkSoft} /><span style={{ color: c.inkSoft }}>{selected.address} · {selected.distance}</span></div>
-            <div className="detail-row"><Users size={16} color={c.inkSoft} /><span style={{ color: c.inkSoft }}>Capacity {selected.capacity}</span></div>
-            <div className="detail-row"><Phone size={16} color={c.inkSoft} /><span style={{ color: c.inkSoft }}>{selected.phone}</span></div>
+            <div className="detail-row"><MapPin size={16} color={c.inkSoft} /><span style={{ color: c.inkSoft }}>{selected.address || "Address unavailable"} · {selected.distanceKm.toFixed(1)} km</span></div>
+            <div className="detail-row"><Phone size={16} color={c.inkSoft} /><span style={{ color: c.inkSoft }}>{selected.phone || "Phone number not listed on OpenStreetMap"}</span></div>
             <div className="detail-actions">
-              <button className="primary-btn flex1" style={{ background: c.primary, color: "#fff" }}><Navigation2 size={16} />&nbsp;Directions</button>
-              <button className="secondary-btn flex1" style={{ borderColor: c.border, color: c.ink }}><PhoneCall size={16} />&nbsp;Call</button>
+              <a
+                className="primary-btn flex1" style={{ background: c.primary, color: "#fff", textDecoration: "none" }}
+                href={`https://www.google.com/maps/dir/?api=1&destination=${selected.lat},${selected.lng}`} target="_blank" rel="noreferrer"
+              >
+                <Navigation2 size={16} />&nbsp;Directions
+              </a>
+              {selected.phone ? (
+                <a className="secondary-btn flex1" style={{ borderColor: c.border, color: c.ink, textDecoration: "none" }} href={`tel:${selected.phone}`}>
+                  <PhoneCall size={16} />&nbsp;Call
+                </a>
+              ) : (
+                <button className="secondary-btn flex1" style={{ borderColor: c.border, color: c.inkSoft }} disabled>
+                  <PhoneCall size={16} />&nbsp;No number
+                </button>
+              )}
             </div>
           </div>
         )}
@@ -992,14 +1720,50 @@ function ShelterScreen({ c }) {
 }
 
 /* =========================================================================
-   AUTHORITY MODULE
+   AUTHORITY MODULE & EMERGENCY BROADCAST
    ========================================================================= */
-function AuthorityScreen({ c, reports, setReports }) {
+function AuthorityScreen({ c, reports, setReports, onBroadcastAlert }) {
   const [view, setView] = useState("citizen");
   const [selected, setSelected] = useState(null);
+  const [broadcastOpen, setBroadcastOpen] = useState(false);
+  const [bTitle, setBTitle] = useState("");
+  const [bMessage, setBMessage] = useState("");
+  const [bCategory, setBCategory] = useState("Flood Advisory");
 
   const advanceStatus = (id) => {
-    setReports((prev) => prev.map((r) => (r.id === id ? { ...r, status: Math.min(r.status + 1, STATUS_STEPS.length - 1) } : r)));
+    setReports((prev) =>
+      prev.map((r) => {
+        if (r.id === id) {
+          const nextStatus = Math.min(r.status + 1, STATUS_STEPS.length - 1);
+          playAlertChime("status");
+          sendBrowserNotification(`Report ${r.id} Status Updated`, {
+            body: `Status changed to "${STATUS_STEPS[nextStatus]}" by ${r.authority}.`,
+          });
+          return { ...r, status: nextStatus };
+        }
+        return r;
+      })
+    );
+  };
+
+  const handleCreateBroadcast = () => {
+    if (!bTitle.trim() || !bMessage.trim()) return;
+    const newBroadcast = {
+      id: Date.now(),
+      title: bTitle.trim(),
+      message: bMessage.trim(),
+      category: bCategory,
+      time: "Just now",
+      authority: "Disaster Control Room",
+    };
+    if (onBroadcastAlert) onBroadcastAlert(newBroadcast);
+    playAlertChime("broadcast");
+    sendBrowserNotification(`🚨 URGENT: ${newBroadcast.title}`, {
+      body: newBroadcast.message,
+    });
+    setBTitle("");
+    setBMessage("");
+    setBroadcastOpen(false);
   };
 
   return (
@@ -1008,6 +1772,16 @@ function AuthorityScreen({ c, reports, setReports }) {
         <button className={view === "citizen" ? "vt-active" : ""} style={{ background: view === "citizen" ? c.primary : "transparent", color: view === "citizen" ? "#fff" : c.ink }} onClick={() => setView("citizen")}>My reports</button>
         <button className={view === "authority" ? "vt-active" : ""} style={{ background: view === "authority" ? c.primary : "transparent", color: view === "authority" ? "#fff" : c.ink }} onClick={() => setView("authority")}>Authority view</button>
       </div>
+
+      {view === "authority" && (
+        <button
+          className="primary-btn"
+          style={{ background: c.danger, color: "#fff", marginTop: 12, marginBottom: 4 }}
+          onClick={() => setBroadcastOpen(true)}
+        >
+          <Radio size={16} />&nbsp;Issue Public Emergency Broadcast
+        </button>
+      )}
 
       {view === "citizen" ? (
         <div className="list-col" style={{ marginTop: 14 }}>
@@ -1063,6 +1837,51 @@ function AuthorityScreen({ c, reports, setReports }) {
           })}
         </div>
       )}
+
+      {/* Broadcast Sheet */}
+      <Sheet open={broadcastOpen} onClose={() => setBroadcastOpen(false)} title="Broadcast Emergency Advisory">
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <p style={{ color: c.inkSoft, fontSize: "0.8125rem" }}>
+            Issuing an advisory sends an immediate push notification and displays a high-priority ticker across citizen devices.
+          </p>
+          <div className="field-label" style={{ color: c.inkSoft }}>Advisory Category</div>
+          <select
+            value={bCategory}
+            onChange={(e) => setBCategory(e.target.value)}
+            style={{ padding: 10, borderRadius: 10, border: `1.5px solid ${c.border}`, background: c.surface, color: c.ink, fontFamily: "Inter, sans-serif" }}
+          >
+            <option>Flood & Inundation Warning</option>
+            <option>Evacuation Order</option>
+            <option>Relief Camp & Food Supply</option>
+            <option>Cyclone & Gale Advisory</option>
+            <option>Road Closure & Safe Routes</option>
+          </select>
+
+          <input
+            placeholder="Advisory Title (e.g. Flash Flood in Sector 4)"
+            value={bTitle}
+            onChange={(e) => setBTitle(e.target.value)}
+            style={{ padding: 12, borderRadius: 12, border: `1.5px solid ${c.border}`, background: c.surface, color: c.ink }}
+          />
+
+          <textarea
+            placeholder="Detailed directives for public safety…"
+            rows={3}
+            value={bMessage}
+            onChange={(e) => setBMessage(e.target.value)}
+            style={{ padding: 12, borderRadius: 12, border: `1.5px solid ${c.border}`, background: c.surface, color: c.ink, resize: "none" }}
+          />
+
+          <button
+            className="primary-btn"
+            disabled={!bTitle.trim() || !bMessage.trim()}
+            style={{ background: c.danger, color: "#fff" }}
+            onClick={handleCreateBroadcast}
+          >
+            <Radio size={16} />&nbsp;Transmit Public Alert
+          </button>
+        </div>
+      </Sheet>
 
       <Sheet open={!!selected} onClose={() => setSelected(null)} title="Report status">
         {selected && (
@@ -1138,7 +1957,7 @@ function ContactsSheet({ c, open, onClose, contacts, setContacts }) {
   );
 }
 
-function MenuSheet({ c, open, onClose, theme, setTheme, lang, setLang, sirenOn, toggleSiren, t, onLogout }) {
+function MenuSheet({ c, open, onClose, theme, setTheme, lang, setLang, sirenOn, toggleSiren, t, onOpenSurvival, notifPermission, onRequestNotif, onLogout }) {
   const [screen, setScreen] = useState("root");
   useEffect(() => { if (open) setScreen("root"); }, [open]);
 
@@ -1146,6 +1965,26 @@ function MenuSheet({ c, open, onClose, theme, setTheme, lang, setLang, sirenOn, 
     <Sheet open={open} onClose={onClose} title={screen === "root" ? "Menu" : screen === "about" ? t.about : screen === "theme" ? t.theme : t.language}>
       {screen === "root" && (
         <div className="menu-list">
+          <button className="menu-row" onClick={() => { onClose(); onOpenSurvival(); }} style={{ borderColor: c.border }}>
+            <BookOpen size={18} color={c.primary} />
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start" }}>
+              <span style={{ color: c.ink, fontWeight: 600 }}>Disaster Survival Guides</span>
+              <span style={{ color: c.inkSoft, fontSize: "0.6875rem" }}>100% available offline</span>
+            </div>
+            <ChevronRight size={16} color={c.inkSoft} style={{ marginLeft: "auto" }} />
+          </button>
+          <button className="menu-row" onClick={onRequestNotif} style={{ borderColor: c.border }}>
+            <BellRing size={18} color={c.warn} />
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start" }}>
+              <span style={{ color: c.ink, fontWeight: 600 }}>Push Notification Alerts</span>
+              <span style={{ color: c.inkSoft, fontSize: "0.6875rem" }}>
+                {notifPermission === "granted" ? "Active (Broadcasts enabled)" : "Tap to enable emergency alerts"}
+              </span>
+            </div>
+            <span style={{ marginLeft: "auto", fontSize: "0.75rem", fontWeight: 700, color: notifPermission === "granted" ? c.safe : c.warn }}>
+              {notifPermission === "granted" ? "Enabled" : "Allow"}
+            </span>
+          </button>
           <button className="menu-row" onClick={() => setScreen("theme")} style={{ borderColor: c.border }}>
             {theme === "light" ? <Sun size={18} color={c.ink} /> : <Moon size={18} color={c.ink} />}
             <span style={{ color: c.ink }}>{t.theme}</span>
@@ -1168,7 +2007,7 @@ function MenuSheet({ c, open, onClose, theme, setTheme, lang, setLang, sirenOn, 
           </button>
           <button className="menu-row" onClick={onLogout} style={{ borderColor: c.border, marginTop: 10 }}>
             <ShieldAlert size={18} color={c.danger} />
-            <span style={{ color: c.danger, fontWeight: 600 }}>Sign Out</span>
+            <span style={{ color: c.danger, fontWeight: 600 }}>{t.signOut || "Sign Out"}</span>
           </button>
         </div>
       )}
@@ -1218,46 +2057,42 @@ function MenuSheet({ c, open, onClose, theme, setTheme, lang, setLang, sirenOn, 
 export default function App() {
   const [stage, setStage] = useState("loading"); // loading | login | location | home
   const [phone, setPhone] = useState("");
-  const [location, setLocation] = useState("Kavali, Andhra Pradesh");
+  const [location, setLocation] = useState(null); // { lat, lng, accuracy, timestamp, label, source } | null
+  const [locating, setLocating] = useState(false);
+  const [locationError, setLocationError] = useState("");
+  const [facilities, setFacilities] = useState([]);
+  const [facilitiesStatus, setFacilitiesStatus] = useState("idle"); // idle | loading | ready | error
   const [activeTab, setActiveTab] = useState("maps");
   const [theme, setTheme] = useState("light");
+  const [facilitiesCachedAt, setFacilitiesCachedAt] = useState(null);
   const [lang, setLang] = useState("en");
   const [contactsOpen, setContactsOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [weatherOpen, setWeatherOpen] = useState(false);
+  const [survivalOpen, setSurvivalOpen] = useState(false);
   const [sirenOn, setSirenOn] = useState(false);
+  const [isOnline, setIsOnline] = useState(typeof navigator !== "undefined" ? navigator.onLine : true);
+  const [offlineQueue, setOfflineQueue] = useState(() => getOfflineQueue());
+  const [syncToast, setSyncToast] = useState("");
+  const [weatherData, setWeatherData] = useState(null);
+  const [weatherLoading, setWeatherLoading] = useState(false);
+  const [broadcasts, setBroadcasts] = useState([
+    {
+      id: 1,
+      title: "District Flood & Inundation Advisory",
+      message: "Low-lying catchment areas are on alert. Keep emergency supplies and mobile powerbanks charged.",
+      time: "10 mins ago",
+      authority: "State Disaster Management",
+    },
+  ]);
+  const [notifPermission, setNotifPermission] = useState(() => getNotificationPermission());
   const [contacts, setContacts] = useState([
     { id: 1, name: "Anitha (Sister)", phone: "+91 90000 11111", primary: true },
     { id: 2, name: "Ravi (Neighbor)", phone: "+91 90000 22222", primary: false },
   ]);
   const [reports, setReports] = useState(SEED_REPORTS);
+  const [facilitiesFromCache, setFacilitiesFromCache] = useState(false); // true when served from IndexedDB
   const siren = useAudioSiren();
-
-  useEffect(() => {
-    async function restoreSession() {
-      try {
-        const session = await verifyCurrentSession();
-        const userPhone = session?.user?.phone || session?.phone;
-        if (userPhone) {
-          console.log("[AUTH] Restored active authenticated session for:", userPhone);
-          setPhone(userPhone);
-          setStage("home");
-        } else {
-          setStage("login");
-        }
-      } catch (err) {
-        console.warn("[AUTH] Session check error:", err);
-        setStage("login");
-      }
-    }
-    restoreSession();
-  }, []);
-
-  const handleLogout = async () => {
-    await logout();
-    setPhone("");
-    setStage("login");
-    setMenuOpen(false);
-  };
 
   const c = theme === "light" ? LIGHT : DARK;
   const t = STRINGS[lang];
@@ -1269,72 +2104,483 @@ export default function App() {
     });
   };
 
+  // ── Session Restoration (Real Supabase & Passkey Auth) ───────────────────
+  useEffect(() => {
+    let cancelled = false;
+
+    async function checkAuthSession() {
+      try {
+        // 1. Check real Supabase authentication session via Supabase Auth API
+        const { data: { session: sbSession }, error: sbError } = await supabase.auth.getSession();
+        if (cancelled) return;
+
+        if (sbSession?.user) {
+          const userPhone = sbSession.user.phone || sbSession.user.user_metadata?.phone || "";
+          console.log("[AUTH] Active Supabase auth session restored for:", userPhone || sbSession.user.id);
+          setPhone(userPhone);
+          setStage("home");
+          return;
+        }
+
+        // 2. Check real WebAuthn server-verified session
+        const webauthnSession = await verifyCurrentSession();
+        if (cancelled) return;
+
+        if (webauthnSession?.user?.phone) {
+          console.log("[AUTH] Active WebAuthn session verified by server for:", webauthnSession.user.phone);
+          setPhone(webauthnSession.user.phone);
+          setStage("home");
+          return;
+        }
+
+        // No active session: show authentication screen
+        console.log("[AUTH] No active authentication session; showing login screen.");
+        setStage("login");
+      } catch (err) {
+        if (cancelled) return;
+        console.warn("[AUTH] Session restoration check error:", err);
+        setStage("login");
+      }
+    }
+
+    checkAuthSession();
+
+
+
+    // Listen to Supabase onAuthStateChange without fighting the initial session check
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (cancelled) return;
+      console.log(`[AUTH] Supabase onAuthStateChange: ${event}`);
+
+      if (event === "SIGNED_OUT") {
+        console.log("[AUTH] Supabase SIGNED_OUT event; resetting application auth state.");
+        clearSession();
+        setPhone("");
+        setStage("login");
+      } else if (event === "SIGNED_IN" && session?.user) {
+        console.log("[AUTH] Supabase SIGNED_IN event for:", session.user.phone || session.user.id);
+        setPhone(session.user.phone || session.user.user_metadata?.phone || "");
+        setStage("home");
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      subscription?.unsubscribe();
+    };
+  }, []);
+
+  // Load cached location on app start if user is authenticated
+  useEffect(() => {
+    if (phone && !location) {
+      getLastKnownLocation()
+        .then((cached) => {
+          if (cached) {
+            setLocation(cached);
+            setLocationError("");
+          }
+        })
+        .catch(() => { });
+    }
+  }, [phone]);
+  const handleLogout = async () => {
+    console.log("[AUTH] Initiating sign out...");
+    try {
+      await supabase.auth.signOut();
+    } catch (err) {
+      console.warn("[AUTH] Supabase signOut error:", err);
+    }
+    try {
+      await logout();
+    } catch (err) {
+      console.warn("[AUTH] Logout error:", err);
+    }
+    setPhone("");
+    setStage("login");
+    setMenuOpen(false);
+    console.log("[AUTH] Sign-out complete; user returned to login screen.");
+  };
+
+  // ── Hydrate contacts & reports from IndexedDB on first mount ────────────
+  useEffect(() => {
+    getEmergencyContacts().then((saved) => {
+      if (saved && saved.length > 0) setContacts(saved);
+    }).catch(() => { });
+
+    getIncidentReports().then((saved) => {
+      if (saved && saved.length > 0) {
+        // Merge: DB records take priority; append SEED_REPORTS that aren't already present
+        setReports((prev) => {
+          const existingIds = new Set(saved.map((r) => r.id));
+          const seedOnly = prev.filter((r) => !existingIds.has(r.id));
+          return [...saved, ...seedOnly];
+        });
+      }
+    }).catch(() => { });
+
+    // Initialise background auto-sync; captures cleanup fn
+    const cleanupSync = initAutoSync((syncedItem) => {
+      if (syncedItem?.id) {
+        setReports((prev) => {
+          const exists = prev.find((r) => r.id === syncedItem.id);
+          return exists ? prev.map((r) => r.id === syncedItem.id ? syncedItem : r) : [syncedItem, ...prev];
+        });
+      }
+    });
+
+    return () => { if (cleanupSync) cleanupSync(); };
+  }, []);
+
+  // ── Persist contacts to IndexedDB whenever they change ─────────────────
+  useEffect(() => {
+    if (contacts && contacts.length > 0) {
+      saveEmergencyContacts(contacts).catch(() => { });
+    }
+  }, [contacts]);
+
+  // Online / Offline synchronization listener
+  useEffect(() => {
+    const handleOnline = () => {
+      setIsOnline(true);
+      setSyncToast("Network restored! Syncing emergency queue…");
+      syncOfflineQueue((item) => {
+        if (item.type && item.id) {
+          setReports((prev) => [item, ...prev]);
+        }
+      }).then((count) => {
+        setOfflineQueue(getOfflineQueue());
+        setTimeout(() => {
+          setSyncToast(count > 0 ? `Successfully synced ${count} emergency dispatches!` : "");
+        }, 3500);
+      });
+    };
+
+    const handleOffline = () => {
+      setIsOnline(false);
+    };
+
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
+  }, []);
+
+  // Fetch real-time weather and flood risk intelligence; fall back to cached value
+  const refreshWeather = useCallback(async () => {
+    if (location?.lat == null || location?.lng == null) return;
+    setWeatherLoading(true);
+    try {
+      if (!navigator.onLine) {
+        // Serve last-known weather from IndexedDB when offline
+        const cached = await getAppState("last_weather").catch(() => null);
+        if (cached?.data) { setWeatherData(cached.data); }
+        return;
+      }
+      const data = await fetchLiveWeatherAndHazard(location.lat, location.lng);
+      setWeatherData(data);
+      // Persist for offline access
+      saveAppState("last_weather", { data }).catch(() => { });
+    } catch (err) {
+      console.warn("Weather fetch failed:", err);
+      // Try IndexedDB fallback on network error
+      const cached = await getAppState("last_weather").catch(() => null);
+      if (cached?.data) { setWeatherData(cached.data); }
+    } finally {
+      setWeatherLoading(false);
+    }
+  }, [location?.lat, location?.lng]);
+
+  useEffect(() => {
+    refreshWeather();
+  }, [refreshWeather]);
+
+  const handleQueueReport = (report) => {
+    const queued = queueOfflineItem(report);
+    setOfflineQueue(getOfflineQueue());
+    const reportWithTs = { ...report, timestamp: Date.now() };
+    // Persist to IndexedDB for offline durability
+    saveIncidentReport(reportWithTs).catch(() => { });
+    setReports((prev) => [reportWithTs, ...prev]);
+  };
+
+  const handleQueueSos = (sos) => {
+    queueOfflineItem(sos);
+    setOfflineQueue(getOfflineQueue());
+  };
+
+  const handleBroadcastAlert = (broadcast) => {
+    setBroadcasts((prev) => [broadcast, ...prev]);
+  };
+
+  const handleRequestNotif = async () => {
+    const perm = await requestNotificationPermission();
+    setNotifPermission(perm);
+  };
+
+  // Real device geolocation → real reverse geocoding. No fallback/mock
+  // coordinates are ever substituted here — on failure we only set
+  // locationError and leave `location` exactly as it was.
+  const refreshLocation = useCallback(async () => {
+    setLocating(true);
+    setLocationError("");
+    try {
+      const pos = await getCurrentPosition();
+      const label = await reverseGeocode(pos.lat, pos.lng);
+      const loc = { lat: pos.lat, lng: pos.lng, accuracy: pos.accuracy, timestamp: pos.timestamp, label, source: "gps" };
+      setLocation(loc);
+      // Persist last-known location to IndexedDB
+      saveLastKnownLocation(loc).catch(() => { });
+    } catch (err) {
+      setLocationError(err?.message || "Couldn't refresh your location.");
+    } finally {
+      setLocating(false);
+    }
+  }, []);
+
+  // Real nearby-facility lookup (OpenStreetMap Overpass) whenever we have a
+  // real coordinate. Falls back to IndexedDB cache when offline or on error.
+  // No mock facility list is used anywhere in this app.
+  useEffect(() => {
+    if (location?.lat == null || location?.lng == null) {
+      setFacilities([]);
+      setFacilitiesStatus("idle");
+      setFacilitiesFromCache(false);
+      return;
+    }
+    let cancelled = false;
+    setFacilitiesStatus("loading");
+    setFacilitiesFromCache(false);
+
+    if (!navigator.onLine) {
+      // Immediately serve from IndexedDB when offline
+      getCachedFacilities().then(({ facilities: cached }) => {
+        if (!cancelled) {
+          if (cached && cached.length > 0) {
+            setFacilities(cached);
+            setFacilitiesStatus("ready");
+            setFacilitiesFromCache(true);
+          } else {
+            setFacilities([]);
+            setFacilitiesStatus("error");
+          }
+        }
+      }).catch(() => {
+        if (!cancelled) { setFacilities([]); setFacilitiesStatus("error"); }
+      });
+      return () => { cancelled = true; };
+    }
+
+    fetchNearbyFacilities(location.lat, location.lng)
+      .then((results) => {
+        if (!cancelled) {
+          setFacilities(results);
+          setFacilitiesStatus("ready");
+          setFacilitiesFromCache(false);
+          // Update IndexedDB cache and store cached timestamp
+          cacheFacilities(results, { lat: location.lat, lng: location.lng })
+            .then(({ cachedAt }) => setFacilitiesCachedAt(cachedAt))
+            .catch(() => { });
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          // Network failed — try IndexedDB fallback
+          getCachedFacilities().then(({ facilities: cached }) => {
+            if (!cancelled) {
+              if (cached && cached.length > 0) {
+                setFacilities(cached);
+                setFacilitiesStatus("ready");
+                setFacilitiesFromCache(true);
+              } else {
+                setFacilities([]);
+                setFacilitiesStatus("error");
+              }
+            }
+          }).catch(() => {
+            if (!cancelled) { setFacilities([]); setFacilitiesStatus("error"); }
+          });
+        }
+      });
+    return () => { cancelled = true; };
+  }, [location?.lat, location?.lng, isOnline]);
+
   return (
     <div className="phone-outer">
       <style>{`
         ${FONT_IMPORT}
-        * { box-sizing: border-box; }
-        /* Reference device: 6.7" smartphone, design resolution 1080 x 2340 px (9:19.5). */
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        /* ── RESPONSIVE FOUNDATION ─────────────────────────────────────────────
+           On real phones (≤ 499 px wide) the app fills the full viewport — no
+           fake phone chrome.  On wider screens (tablets / desktops / previews)
+           it renders as a centered phone mockup.
+        ─────────────────────────────────────────────────────────────────────── */
         :root {
-          --phone-h: min(97vh, 1060px);
-          font-size: calc(var(--phone-h) / 53);
+          font-size: 16px; /* fixed base — no phone-height-derived scaling */
+          --phone-h: 100dvh; /* fallback below */
         }
+        @supports not (height: 100dvh) {
+          :root { --phone-h: 150vh; }
+        }
+
+        /* ── PHONE OUTER CONTAINER ────────────────────────────────────────── */
         .phone-outer {
-          width: 100%; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+          position: fixed;
+          inset: 0;
+          width: 100vw;
+          height: 100vh;
+          height: 100dvh;
+          margin: 0;
+          padding: 0;
+          display: flex;
+          align-items: center;
+          justify-content: center;
           background: radial-gradient(circle at 50% 0%, #1c2733, #05080c);
-          padding: 10px; font-family: 'Inter', sans-serif; overflow: hidden;
+          font-family: 'Inter', sans-serif;
+          overflow: hidden !important; /* Page must never scroll on desktop */
+          overscroll-behavior: none !important;
+          box-sizing: border-box;
         }
-        .phone-frame {
-          /* Height unchanged; width widened ~10% over the true 1080:2340 ratio for a more comfortable flagship-style body. */
-          height: var(--phone-h); aspect-ratio: 1188 / 2340; width: auto; max-width: 96vw;
-          background: #000; border-radius: calc(var(--phone-h) * 0.05);
-          padding: calc(var(--phone-h) * 0.013);
-          box-shadow: 0 30px 80px rgba(0,0,0,0.6), 0 0 0 2px #2a2f36;
-          position: relative; flex-shrink: 0;
+
+        /* ── REAL MOBILE (≤ 499px wide) ──────────────────────────────────── */
+        @media (max-width: 499px) {
+          .phone-outer {
+            position: fixed;
+            inset: 0;
+            padding: 0;
+            background: ${c.bg};
+          }
+          .phone-frame {
+            width: 100% !important;
+            height: 100% !important;
+            height: 100dvh !important;
+            max-width: 100% !important;
+            max-height: 100% !important;
+            aspect-ratio: unset !important;
+            border-radius: 0 !important;
+            padding: 0 !important;
+            box-shadow: none !important;
+            border: none !important;
+            background: ${c.bg} !important;
+          }
+          .phone-screen {
+            border-radius: 0 !important;
+          }
+          .notch, .home-indicator, .statusbar {
+            display: none !important;
+          }
         }
-        .phone-screen {
-          width: 100%; height: 100%; background: ${c.bg}; border-radius: calc(var(--phone-h) * 0.04); overflow: hidden;
-          position: relative; display: flex; flex-direction: column;
+
+        /* ── DESKTOP / TABLET PHONE MOCKUP (≥ 500px) ─────────────────────── */
+        @media (min-width: 500px) {
+          .phone-outer {
+            padding: 8px 14px;
+          }
+          .phone-frame {
+            /* Flagship smartphone mockup fixed to desktop screen (width: 340px, height: up to 835px) */
+            width: 340px;
+            max-width: calc(100vw - 20px);
+            height: min(835px, calc(100vh - 16px));
+            height: min(835px, calc(100dvh - 16px));
+            background: #000;
+            border-radius: 44px;
+            padding: 9px;
+            box-shadow: 0 25px 70px rgba(0,0,0,0.85), 0 0 0 2px #2a2f36;
+            position: relative;
+            flex-shrink: 0;
+            display: flex;
+            flex-direction: column;
+          }
+          .phone-screen {
+            border-radius: 35px;
+            overflow: hidden;
+            width: 100%;
+            height: 100%;
+            background: ${c.bg};
+            position: relative;
+            display: flex;
+            flex-direction: column;
+          }
+          .notch {
+            display: block;
+            position: absolute;
+            top: 8px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 78px;
+            height: 14px;
+            background: #000;
+            border-radius: 12px;
+            z-index: 50;
+            pointer-events: none;
+          }
+          .home-indicator {
+            display: block;
+            position: absolute;
+            bottom: 5px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 92px;
+            height: 4px;
+            background: ${c.ink};
+            opacity: 0.3;
+            border-radius: 4px;
+            z-index: 60;
+            pointer-events: none;
+          }
+          .bottom-nav {
+            padding-bottom: 16px;
+          }
         }
-        .notch {
-          position: absolute; top: calc(var(--phone-h) * 0.014); left: 50%; transform: translateX(-50%);
-          width: calc(var(--phone-h) * 0.09); height: calc(var(--phone-h) * 0.016);
-          background: #000; border-radius: calc(var(--phone-h) * 0.014); z-index: 50;
-        }
-        .home-indicator {
-          position: absolute; bottom: calc(var(--phone-h) * 0.008); left: 50%; transform: translateX(-50%);
-          width: calc(var(--phone-h) * 0.16); height: calc(var(--phone-h) * 0.0045); min-height: 3px;
-          background: ${c.ink}; opacity: 0.35; border-radius: 4px; z-index: 60; pointer-events: none;
-        }
+
+        /* ── STATUS BAR ──────────────────────────────────────────────────── */
         .statusbar {
-          height: 40px; flex-shrink: 0; display: flex; align-items: center; justify-content: space-between;
-          padding: 0 26px; font-size: 0.8125rem; font-weight: 700; font-family: 'Manrope', sans-serif;
+          height: 38px;
+          flex-shrink: 0;
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          padding: 0 20px;
+          font-size: 0.8125rem;
+          font-weight: 700;
+          font-family: 'Manrope', sans-serif;
+          z-index: 40;
         }
         .statusbar-icons { display: flex; gap: 4px; }
         .sb-dot { width: 4px; height: 4px; border-radius: 2px; background: currentColor; opacity: 0.9; }
 
-        .screen { flex: 1; display: flex; flex-direction: column; overflow-y: auto; }
+        /* ── GENERIC SCREEN BASE ─────────────────────────────────────────── */
+        .screen { flex: 1; display: flex; flex-direction: column; overflow-y: auto; overflow-x: hidden; min-width: 0; }
 
-        h1, h2, h3 { font-family: 'Manrope', sans-serif; margin: 0; }
-        p { margin: 0; font-size: 0.875rem; line-height: 1.5; }
+        h1, h2, h3 { font-family: 'Manrope', sans-serif; }
+        p { font-size: 0.875rem; line-height: 1.5; }
 
-        .login-screen { justify-content: space-between; padding-bottom: 0; }
-        .login-top { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 0 30px; text-align: center; }
-        .brand-mark { width: 64px; height: 64px; border-radius: 20px; background: #fff; display: flex; align-items: center; justify-content: center; margin-bottom: 6px; }
-        .brand-name { color: #fff; font-size: 1.625rem; font-weight: 800; letter-spacing: -0.02em; }
-        .brand-tag { color: rgba(255,255,255,0.85); font-size: 0.875rem; }
-        .login-card { border-radius: 28px 28px 0 0; padding: 28px 22px 34px; display: flex; flex-direction: column; gap: 12px; }
-        .field-label { font-size: 0.8438rem; font-weight: 600; font-family: 'Manrope', sans-serif; }
-        .phone-input-row { display: flex; align-items: center; border: 1.5px solid; border-radius: 14px; overflow: hidden; }
-        .phone-cc { padding: 14px 12px; border-right: 1.5px solid; font-weight: 600; font-size: 0.9375rem; }
-        .phone-input-row input { flex: 1; border: none; outline: none; padding: 14px 12px; font-size: 1rem; background: transparent; font-family: 'Inter', sans-serif; }
-        .primary-btn { border: none; border-radius: 14px; padding: 15px; font-size: 0.9375rem; font-weight: 700; font-family: 'Manrope', sans-serif; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 4px; }
+        /* ── LOGIN / AUTH ────────────────────────────────────────────────── */
+        .login-screen { justify-content: space-between; padding-bottom: 0; overflow-y: auto; overflow-x: hidden; }
+        .login-top { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 10px 20px 8px; text-align: center; min-height: 110px; }
+        .brand-mark { width: 52px; height: 52px; border-radius: 16px; background: #fff; display: flex; align-items: center; justify-content: center; margin-bottom: 4px; flex-shrink: 0; box-shadow: 0 4px 12px rgba(0,0,0,0.12); }
+        .brand-name { color: #fff; font-size: 1.4375rem; font-weight: 800; letter-spacing: -0.02em; }
+        .brand-tag { color: rgba(255,255,255,0.85); font-size: 0.8125rem; }
+        .login-card {
+          border-radius: 26px 26px 0 0;
+          padding: 18px 18px 22px;
+          display: flex; flex-direction: column; gap: 10px;
+          width: 100%; max-width: 100%; overflow-x: hidden;
+          box-shadow: 0 -4px 20px rgba(0,0,0,0.06);
+        }
+        .field-label { font-size: 0.8125rem; font-weight: 600; font-family: 'Manrope', sans-serif; }
+        .phone-input-row { display: flex; align-items: center; border: 1.5px solid; border-radius: 12px; overflow: hidden; width: 100%; }
+        .phone-cc { padding: 11px 12px; border-right: 1.5px solid; font-weight: 600; font-size: 0.875rem; flex-shrink: 0; }
+        .phone-input-row input { flex: 1; border: none; outline: none; padding: 11px 12px; font-size: 0.9375rem; background: transparent; font-family: 'Inter', sans-serif; min-width: 0; }
+        .primary-btn { border: none; border-radius: 12px; padding: 12px 14px; font-size: 0.875rem; font-weight: 700; font-family: 'Manrope', sans-serif; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 6px; width: 100%; }
         .primary-btn:disabled { cursor: not-allowed; }
-        .secondary-btn { border: 1.5px solid; background: transparent; border-radius: 14px; padding: 14px; font-size: 0.875rem; font-weight: 700; font-family: 'Manrope', sans-serif; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 4px; }
-        .secondary-btn.small { padding: 8px 12px; font-size: 0.7812rem; }
-        .text-btn { background: none; border: none; font-size: 0.8438rem; font-weight: 700; font-family: 'Manrope', sans-serif; cursor: pointer; align-self: center; padding: 6px; }
-        .fine-print { font-size: 0.7812rem; line-height: 1.5; }
-        .flex1 { flex: 1; }
+        .secondary-btn { border: 1.5px solid; background: transparent; border-radius: 12px; padding: 11px 14px; font-size: 0.8125rem; font-weight: 700; font-family: 'Manrope', sans-serif; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 4px; }
+        .secondary-btn.small { padding: 7px 10px; font-size: 0.75rem; }
+        .text-btn { background: none; border: none; font-size: 0.8125rem; font-weight: 700; font-family: 'Manrope', sans-serif; cursor: pointer; align-self: center; padding: 4px; }
+        .fine-print { font-size: 0.75rem; line-height: 1.45; }
+        .flex1 { flex: 1; min-width: 0; }
         .two-btn-row { display: flex; gap: 10px; margin-top: 6px; }
 
         .passkey-btn { gap: 8px; }
@@ -1344,47 +2590,273 @@ export default function App() {
         .spin { animation: spin 0.8s linear infinite; }
         @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
-        .loc-wrap { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 10px; padding: 30px; }
-        .loc-pulse-wrap { margin-bottom: 8px; }
-        .loc-pulse { width: 76px; height: 76px; border-radius: 50%; display: flex; align-items: center; justify-content: center; }
-        .loc-pulse.pulsing { animation: locPulse 1.2s infinite; }
-        @keyframes locPulse { 0% { box-shadow: 0 0 0 0 rgba(15,61,92,0.25);} 100% { box-shadow: 0 0 0 22px rgba(15,61,92,0);} }
-        .loc-wrap .primary-btn { width: 100%; margin-top: 14px; }
-        .manual-loc-input { width: 100%; border: 1.5px solid; border-radius: 12px; padding: 13px; font-size: 0.9062rem; margin-top: 10px; font-family: 'Inter', sans-serif; }
+        /* ── LOCATION SCREEN ─────────────────────────────────────────────── */
+        .loc-screen {
+          flex: 1;
+          display: flex;
+          flex-direction: column;
+          overflow-y: auto;
+          overflow-x: hidden;
+          padding: 10px 14px max(14px, env(safe-area-inset-bottom));
+        }
+        .loc-container {
+          flex: 1;
+          display: flex;
+          flex-direction: column;
+          justify-content: space-between;
+          min-height: 100%;
+          gap: 10px;
+        }
+        .loc-hero {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          text-align: center;
+          padding-top: 2px;
+        }
+        .loc-pulse-wrap {
+          position: relative;
+          width: 78px;
+          height: 78px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          margin-bottom: 8px;
+        }
+        .loc-radar-halo {
+          position: absolute;
+          inset: -6px;
+          border-radius: 50%;
+          border: 1.5px dashed rgba(15, 61, 92, 0.35);
+          animation: spin 16s linear infinite;
+        }
+        .loc-pulse {
+          width: 64px;
+          height: 64px;
+          border-radius: 50%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          box-shadow: 0 4px 14px rgba(15,61,92,0.12);
+        }
+        .loc-pulse.pulsing { animation: locPulse 1.4s infinite; }
+        @keyframes locPulse {
+          0% { box-shadow: 0 0 0 0 rgba(15,61,92,0.32); }
+          100% { box-shadow: 0 0 0 20px rgba(15,61,92,0); }
+        }
+        .loc-badge-tag {
+          display: inline-flex;
+          align-items: center;
+          gap: 4px;
+          padding: 2px 8px;
+          border-radius: 10px;
+          font-size: 0.625rem;
+          font-weight: 800;
+          letter-spacing: 0.04em;
+          margin-bottom: 6px;
+        }
+        .loc-title {
+          font-size: 1.2188rem;
+          font-weight: 800;
+          letter-spacing: -0.01em;
+          line-height: 1.25;
+          margin-bottom: 5px;
+        }
+        .loc-desc {
+          font-size: 0.7813rem;
+          line-height: 1.42;
+          max-width: 290px;
+        }
+        .loc-features {
+          display: flex;
+          flex-direction: column;
+          gap: 7px;
+          margin: 4px 0;
+        }
+        .loc-feat-card {
+          display: flex;
+          align-items: center;
+          gap: 9px;
+          padding: 8px 10px;
+          border-radius: 13px;
+          border: 1px solid;
+          text-align: left;
+          box-shadow: 0 2px 6px rgba(0,0,0,0.02);
+        }
+        .loc-feat-icon {
+          width: 32px;
+          height: 32px;
+          border-radius: 9px;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          flex-shrink: 0;
+        }
+        .loc-feat-text {
+          display: flex;
+          flex-direction: column;
+          min-width: 0;
+        }
+        .loc-feat-head {
+          font-size: 0.7813rem;
+          font-weight: 700;
+          font-family: 'Manrope', sans-serif;
+          line-height: 1.2;
+        }
+        .loc-feat-sub {
+          font-size: 0.6875rem;
+          line-height: 1.35;
+          margin-top: 1px;
+        }
+        .manual-loc-card {
+          border-radius: 14px;
+          border: 1px solid;
+          padding: 14px;
+          display: flex;
+          flex-direction: column;
+          gap: 10px;
+          width: 100%;
+          margin: 8px 0;
+          box-shadow: 0 4px 14px rgba(0,0,0,0.04);
+        }
+        .manual-loc-input {
+          width: 100%;
+          border: 1.5px solid;
+          border-radius: 11px;
+          padding: 10px 12px;
+          font-size: 0.875rem;
+          font-family: 'Inter', sans-serif;
+          outline: none;
+        }
+        .loc-actions {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: 5px;
+          padding-top: 2px;
+          width: 100%;
+        }
+        .loc-allow-btn {
+          width: 100%;
+          height: 42px;
+          font-size: 0.875rem;
+          font-weight: 700;
+          border-radius: 13px;
+          box-shadow: 0 4px 14px rgba(15,61,92,0.2);
+        }
+        .loc-privacy-note {
+          font-size: 0.6563rem;
+          text-align: center;
+          line-height: 1.3;
+          margin-top: 2px;
+        }
 
-        .app-header { flex-shrink: 0; display: flex; align-items: center; gap: 10px; padding: 14px 12px 12px; padding-top: max(14px, env(safe-area-inset-top)); }
-        .header-loc { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; }
-        .header-loc-text { display: flex; flex-direction: column; min-width: 0; }
-        .header-loc-label { font-size: 0.6875rem; font-weight: 600; letter-spacing: 0.01em; }
-        .header-loc-value { font-size: 0.875rem; font-weight: 700; font-family: 'Manrope', sans-serif; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 150px; }
-        .header-mid { display: flex; align-items: center; gap: 5px; background: rgba(255,255,255,0.12); border: 1px solid; border-radius: 20px; padding: 8px 13px; font-size: 0.8125rem; font-weight: 700; font-family: 'Manrope', sans-serif; cursor: pointer; }
-        .icon-btn { background: none; border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; padding: 4px; }
+        /* ── APP HEADER ──────────────────────────────────────────────────── */
+        .app-header {
+          flex-shrink: 0; display: flex; align-items: center; gap: 8px;
+          padding: 10px 12px 8px;
+          padding-top: max(8px, env(safe-area-inset-top));
+          width: 100%; max-width: 100%; overflow: hidden;
+        }
+        .header-loc { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; background: none; border: none; padding: 0; cursor: pointer; text-align: left; font-family: 'Inter', sans-serif; overflow: hidden; }
+        .header-loc-text { display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
+        .header-loc-label { font-size: 0.6563rem; font-weight: 600; letter-spacing: 0.01em; }
+        .header-loc-value { font-size: 0.8438rem; font-weight: 700; font-family: 'Manrope', sans-serif; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .header-mid { display: flex; align-items: center; gap: 5px; background: rgba(255,255,255,0.12); border: 1px solid; border-radius: 18px; padding: 7px 11px; font-size: 0.7812rem; font-weight: 700; font-family: 'Manrope', sans-serif; cursor: pointer; white-space: nowrap; flex-shrink: 0; }
+        .icon-btn { background: none; border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; padding: 4px; flex-shrink: 0; }
 
-        .module-screen { flex: 1; overflow-y: auto; padding: 14px 16px 20px; }
+        /* ── MODULE SCREENS (Maps/Report/SOS/Shelter/Authority) ───────────── */
+        .module-screen {
+          flex: 1; overflow-y: auto; overflow-x: hidden;
+          padding: 12px 14px calc(14px + env(safe-area-inset-bottom, 0px));
+          width: 100%; max-width: 100%;
+        }
         .section-heading { font-family: 'Manrope', sans-serif; font-weight: 700; font-size: 1.0625rem; margin-bottom: 12px; }
 
-        .chip-row { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 12px; align-items: center; }
+        /* ── CHIP ROW ─────────────────────────────────────────────────────── */
+        .chip-row { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 12px; align-items: center; width: 100%; -webkit-overflow-scrolling: touch; }
+        .chip-row::-webkit-scrollbar { display: none; }
         .chip { flex-shrink: 0; border: 1.5px solid; border-radius: 20px; padding: 8px 14px; font-size: 0.8125rem; font-weight: 600; cursor: pointer; white-space: nowrap; font-family: 'Manrope', sans-serif; }
 
-        .map-canvas { position: relative; width: 100%; height: 220px; border-radius: 18px; border: 1px solid; overflow: hidden; margin-bottom: 16px; }
-        .map-grid-svg { position: absolute; inset: 0; width: 100%; height: 100%; }
-        .user-dot-wrap { position: absolute; transform: translate(-50%, -50%); }
-        .user-dot { width: 14px; height: 14px; border-radius: 50%; border: 3px solid #fff; box-shadow: 0 1px 4px rgba(0,0,0,0.3); }
-        .user-dot-ring { position: absolute; top: -13px; left: -13px; width: 40px; height: 40px; border-radius: 50%; border: 2px solid; opacity: 0.35; animation: ring 2s infinite; }
-        @keyframes ring { 0% { transform: scale(0.6); opacity: 0.5; } 100% { transform: scale(1.4); opacity: 0; } }
-        .map-marker { position: absolute; transform: translate(-50%, -100%); width: 26px; height: 26px; border-radius: 50% 50% 50% 0; display: flex; align-items: center; justify-content: center; border: 2px solid #fff; cursor: pointer; box-shadow: 0 2px 6px rgba(0,0,0,0.25); transform-origin: center; }
-        .map-marker svg { transform: rotate(45deg); }
-        .map-zoom-controls { position: absolute; right: 10px; bottom: 10px; display: flex; flex-direction: column; gap: 6px; }
-        .map-zoom-btn { width: 30px; height: 30px; border-radius: 8px; border: none; font-size: 1.0625rem; font-weight: 700; cursor: pointer; box-shadow: 0 1px 4px rgba(0,0,0,0.2); }
+        /* ── LEAFLET MAP WRAPPER ─────────────────────────────────────────── */
+        .leaflet-wrap {
+          position: relative;
+          width: 100%; max-width: 100%;
+          border-radius: 18px;
+          border: 1px solid;
+          overflow: hidden;
+          margin-bottom: 16px;
+          isolation: isolate;
+          /* prevent the map from creating horizontal scroll */
+          flex-shrink: 0;
+        }
+        /* Override Leaflet's own sizing to ensure it never overflows */
+        .leaflet-wrap .leaflet-container {
+          width: 100% !important;
+          height: 100% !important;
+          background: ${c.surfaceAlt};
+          font-family: 'Inter', sans-serif;
+          z-index: 1;
+        }
+        /* Compact attribution on small screens */
+        .leaflet-wrap .leaflet-control-attribution {
+          font-size: 0.6rem;
+          max-width: 60vw;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
 
-        .list-col { display: flex; flex-direction: column; gap: 10px; }
-        .facility-row, .shelter-card, .report-row, .recipient-row, .contact-row { display: flex; align-items: center; gap: 12px; border-radius: 14px; padding: 12px; border: none; border-left: 4px solid; cursor: pointer; text-align: left; width: 100%; }
+        /* ── MAP REFRESH BUTTON ───────────────────────────────────────────── */
+        .map-refresh-btn {
+          flex-shrink: 0;
+          width: 36px; height: 36px;
+          min-width: 36px; min-height: 36px; /* reliable tap target */
+          border-radius: 10px;
+          border: 1.5px solid;
+          background: none;
+          display: flex; align-items: center; justify-content: center;
+          cursor: pointer;
+        }
+        .map-refresh-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        /* ── LOCATION EMPTY STATE ────────────────────────────────────────── */
+        .loc-empty-state {
+          display: flex; flex-direction: column; align-items: center; text-align: center;
+          gap: 10px;
+          padding: 32px 18px;
+          border: 1px solid;
+          border-radius: 18px;
+          margin-top: 12px;
+          width: 100%; max-width: 100%;
+        }
+        .loc-empty-state .primary-btn {
+          width: auto;
+          padding-left: 24px; padding-right: 24px;
+          margin-top: 6px;
+        }
+
+        /* ── LOCATION ERROR BANNER ───────────────────────────────────────── */
+        .location-error-banner {
+          flex-shrink: 0;
+          display: flex; align-items: center;
+          gap: 8px;
+          padding: 10px 16px;
+          font-size: 0.8125rem; font-weight: 600;
+          font-family: 'Inter', sans-serif;
+          width: 100%; max-width: 100%;
+          word-break: break-word;
+        }
+
+        /* ── LISTS / CARDS ───────────────────────────────────────────────── */
+        .list-col { display: flex; flex-direction: column; gap: 10px; width: 100%; }
+        .facility-row, .shelter-card, .report-row, .recipient-row, .contact-row { display: flex; align-items: center; gap: 12px; border-radius: 14px; padding: 12px; border: none; border-left: 4px solid; cursor: pointer; text-align: left; width: 100%; max-width: 100%; overflow: hidden; }
         .recipient-row { border-left: none; border: 1.5px solid; justify-content: space-between; }
         .contact-row { border-left: none; border: 1px solid; justify-content: space-between; }
         .facility-icon { width: 40px; height: 40px; border-radius: 12px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
-        .facility-info { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
-        .facility-name { font-size: 0.9375rem; font-weight: 700; font-family: 'Manrope', sans-serif; }
-        .facility-sub { font-size: 0.7812rem; }
+        .facility-info { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; overflow: hidden; }
+        .facility-name { font-size: 0.9375rem; font-weight: 700; font-family: 'Manrope', sans-serif; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .facility-sub { font-size: 0.7812rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .checkbox { width: 22px; height: 22px; border-radius: 6px; border: 1.5px solid; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
 
         .shelter-card { flex-direction: column; align-items: flex-start; gap: 4px; }
@@ -1396,35 +2868,42 @@ export default function App() {
 
         .facility-detail { display: flex; flex-direction: column; gap: 10px; }
         .detail-row { display: flex; align-items: center; gap: 8px; font-size: 0.8125rem; }
-        .detail-actions { display: flex; gap: 10px; margin-top: 8px; }
+        .detail-actions { display: flex; gap: 10px; margin-top: 8px; flex-wrap: wrap; }
 
+        /* ── REPORT ──────────────────────────────────────────────────────── */
         .step-indicator { display: flex; gap: 6px; margin-bottom: 16px; }
         .step-indicator-seg { flex: 1; height: 4px; border-radius: 3px; }
         .type-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 18px; }
         .type-card { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; border: 1.5px solid; border-radius: 16px; padding: 14px 6px; cursor: pointer; text-align: center; }
         .type-card span { font-size: 0.75rem; font-weight: 600; line-height: 1.3; }
-
         .textarea { width: 100%; min-height: 90px; border-radius: 14px; border: 1.5px solid; padding: 12px; font-size: 0.875rem; font-family: 'Inter', sans-serif; resize: none; margin-bottom: 12px; }
         .severity-row { display: flex; gap: 8px; margin-top: 8px; margin-bottom: 4px; }
         .severity-chip { flex: 1; border: 1.5px solid; border-radius: 12px; padding: 11px 0; font-size: 0.8125rem; font-weight: 700; cursor: pointer; font-family: 'Manrope', sans-serif; }
         .attach-row { display: flex; gap: 8px; margin-top: 8px; margin-bottom: 6px; }
         .attach-btn { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 6px; border: 1.5px solid; border-radius: 14px; padding: 13px 4px; background: none; cursor: pointer; font-size: 0.75rem; font-weight: 600; }
-
-        .confirm-hero { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 26px; border-radius: 18px; margin-bottom: 16px; text-align: center; }
+        .confirm-hero { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 26px 18px; border-radius: 18px; margin-bottom: 16px; text-align: center; }
         .report-id { font-size: 1.25rem; font-weight: 800; font-family: 'Manrope', sans-serif; letter-spacing: 0.02em; }
         .status-track { display: flex; flex-direction: column; margin-bottom: 16px; }
         .status-track-row { display: flex; align-items: flex-start; gap: 12px; padding: 2px 0; font-size: 0.8125rem; }
         .status-track-dotwrap { display: flex; flex-direction: column; align-items: center; }
         .status-dot { width: 12px; height: 12px; border-radius: 50%; margin-top: 3px; }
         .status-line { width: 2px; flex: 1; min-height: 18px; }
-        .summary-card { border: 1px solid; border-radius: 16px; padding: 14px; display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; }
-        .summary-line { display: flex; justify-content: space-between; font-size: 0.8438rem; gap: 10px; }
+        .summary-card { border: 1px solid; border-radius: 16px; padding: 14px; display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; width: 100%; }
+        .summary-line { display: flex; justify-content: space-between; font-size: 0.8438rem; gap: 10px; flex-wrap: wrap; }
 
-        .sos-cat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 22px; }
-        .sos-cat-card { display: flex; flex-direction: column; align-items: center; gap: 6px; border: 1.5px solid; border-radius: 14px; padding: 10px 2px; cursor: pointer; }
-        .sos-cat-card span { font-size: 0.6875rem; font-weight: 700; text-align: center; line-height: 1.25; }
-        .sos-button-wrap { display: flex; flex-direction: column; align-items: center; gap: 14px; margin-top: 10px; }
-        .sos-big-btn { width: 190px; height: 190px; border-radius: 50%; border: none; color: #fff; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; font-family: 'Manrope', sans-serif; font-weight: 800; font-size: 1rem; letter-spacing: 0.04em; cursor: pointer; box-shadow: 0 0 0 10px rgba(214,40,40,0.12), 0 10px 30px rgba(214,40,40,0.35); }
+        /* ── SOS ─────────────────────────────────────────────────────────── */
+        .sos-cat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; margin-bottom: 12px; }
+        .sos-cat-card { display: flex; flex-direction: column; align-items: center; gap: 4px; border: 1.5px solid; border-radius: 10px; padding: 6px 2px; cursor: pointer; }
+        .sos-cat-card span { font-size: 0.5938rem; font-weight: 700; text-align: center; line-height: 1.2; }
+        .sos-button-wrap { display: flex; flex-direction: column; align-items: center; gap: 10px; margin-top: 6px; }
+        .sos-big-btn {
+          width: min(130px, 42vw); height: min(130px, 42vw);
+          border-radius: 50%; border: none; color: #fff;
+          display: flex; flex-direction: column; align-items: center; justify-content: center;
+          gap: 6px; font-family: 'Manrope', sans-serif; font-weight: 800; font-size: 0.8438rem;
+          letter-spacing: 0.03em; cursor: pointer;
+          box-shadow: 0 0 0 8px rgba(214,40,40,0.12), 0 8px 24px rgba(214,40,40,0.35);
+        }
         .sos-big-btn:disabled { opacity: 0.4; cursor: not-allowed; box-shadow: none; }
         .sos-big-btn.pressing { transform: scale(0.95); }
         .sos-sent { display: flex; flex-direction: column; align-items: center; gap: 14px; padding-top: 30px; }
@@ -1435,29 +2914,45 @@ export default function App() {
         @keyframes radar { 0% { transform: scale(0.4); opacity: 0.7; } 100% { transform: scale(1); opacity: 0; } }
         .radar-core { position: relative; width: 76px; height: 76px; border-radius: 50%; display: flex; align-items: center; justify-content: center; z-index: 2; }
 
+        /* ── AUTHORITY ───────────────────────────────────────────────────── */
         .authority-card { border: 1px solid; border-radius: 16px; padding: 12px; display: flex; flex-direction: column; gap: 4px; }
         .authority-card-top { display: flex; align-items: center; gap: 10px; }
-        .authority-meta { display: flex; justify-content: space-between; font-size: 0.75rem; margin: 4px 0 8px; }
+        .authority-meta { display: flex; justify-content: space-between; font-size: 0.75rem; margin: 4px 0 8px; flex-wrap: wrap; gap: 4px; }
         .authority-status-row { display: flex; justify-content: space-between; align-items: center; }
 
+        /* ── SETTINGS / MENU ─────────────────────────────────────────────── */
         .menu-list { display: flex; flex-direction: column; gap: 6px; }
-        .menu-row { display: flex; align-items: center; gap: 12px; padding: 13px 4px; border: none; border-bottom: 1px solid; background: none; cursor: pointer; font-size: 0.875rem; font-family: 'Inter', sans-serif; }
-        .toggle { width: 38px; height: 22px; border-radius: 12px; position: relative; transition: background 0.2s; }
+        .menu-row { display: flex; align-items: center; gap: 12px; padding: 13px 4px; border: none; border-bottom: 1px solid; background: none; cursor: pointer; font-size: 0.875rem; font-family: 'Inter', sans-serif; width: 100%; }
+        .toggle { width: 38px; height: 22px; border-radius: 12px; position: relative; transition: background 0.2s; flex-shrink: 0; }
         .toggle-knob { width: 18px; height: 18px; border-radius: 50%; background: #fff; position: absolute; top: 2px; left: 2px; transition: left 0.2s; box-shadow: 0 1px 3px rgba(0,0,0,0.3); }
         .toggle.on .toggle-knob { left: 18px; }
-
         .add-contact-form { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
-        .add-contact-form input { border: 1.5px solid; border-radius: 12px; padding: 12px; font-size: 0.875rem; font-family: 'Inter', sans-serif; }
+        .add-contact-form input { border: 1.5px solid; border-radius: 12px; padding: 12px; font-size: 0.875rem; font-family: 'Inter', sans-serif; width: 100%; }
         .contact-actions { display: flex; gap: 4px; }
 
-        .bottom-nav { flex-shrink: 0; display: flex; align-items: center; border-top: 1px solid; padding: 8px 4px calc(8px + var(--phone-h) * 0.022); position: relative; }
-        .nav-item, .nav-sos-wrap { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px; background: none; border: none; cursor: pointer; padding: 6px 0; }
-        .nav-label { font-size: 0.7188rem; font-weight: 700; font-family: 'Manrope', sans-serif; letter-spacing: 0.01em; white-space: nowrap; }
-        .nav-sos-btn { width: 54px; height: 54px; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin-top: -28px; box-shadow: 0 6px 16px rgba(214,40,40,0.45), 0 0 0 5px ${c.surface}; }
-        .nav-sos-active { box-shadow: 0 6px 16px rgba(214,40,40,0.6), 0 0 0 5px ${c.surface}, 0 0 0 9px rgba(214,40,40,0.25); }
+        /* ── BOTTOM NAV ──────────────────────────────────────────────────── */
+        .bottom-nav {
+          flex-shrink: 0; display: flex; align-items: center;
+          border-top: 1px solid;
+          padding: 6px 4px max(8px, env(safe-area-inset-bottom));
+          position: relative;
+          width: 100%; max-width: 100%;
+        }
+        .nav-item, .nav-sos-wrap { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px; background: none; border: none; cursor: pointer; padding: 4px 1px; min-width: 0; }
+        .nav-label { font-size: 0.6563rem; font-weight: 700; font-family: 'Manrope', sans-serif; letter-spacing: 0.01em; white-space: nowrap; }
+        .nav-sos-btn { width: 50px; height: 50px; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin-top: -25px; box-shadow: 0 6px 16px rgba(214,40,40,0.45), 0 0 0 4px ${c.surface}; flex-shrink: 0; }
+        .nav-sos-active { box-shadow: 0 6px 16px rgba(214,40,40,0.6), 0 0 0 4px ${c.surface}, 0 0 0 8px rgba(214,40,40,0.25); }
 
-        .sheet-overlay { position: absolute; inset: 0; background: rgba(0,0,0,0.45); z-index: 100; display: flex; align-items: flex-end; border-radius: 34px; }
-        .sheet { width: 100%; background: ${c.surface}; border-radius: 24px 24px 0 0; padding: 10px 18px 26px; max-height: 75vh; overflow-y: auto; }
+        /* ── SHEETS / MODALS ─────────────────────────────────────────────── */
+        .sheet-overlay { position: absolute; inset: 0; background: rgba(0,0,0,0.45); z-index: 100; display: flex; align-items: flex-end; border-radius: inherit; overflow: hidden; }
+        .sheet {
+          width: 100%; max-width: 100%;
+          background: ${c.surface};
+          border-radius: 24px 24px 0 0;
+          padding: 10px 18px max(26px, env(safe-area-inset-bottom));
+          max-height: 88%;
+          overflow-y: auto; overflow-x: hidden;
+        }
         .sheet-handle { width: 36px; height: 4px; border-radius: 2px; background: ${c.border}; margin: 4px auto 10px; }
         .sheet-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
         .sheet-title { font-family: 'Manrope', sans-serif; font-weight: 700; font-size: 1.0625rem; color: ${c.ink}; }
@@ -1469,12 +2964,18 @@ export default function App() {
         <div className="phone-screen">
           <div className="notch" />
           <div className="home-indicator" />
-          <StatusBar c={theme === "light" ? { headerText: c.ink } : { headerText: c.ink }} />
+          <StatusBar
+            c={{ headerText: stage === "location" ? c.ink : "#FFFFFF" }}
+            bg={stage === "location" ? c.bg : c.primary}
+          />
 
           {stage === "loading" && (
-            <div className="screen" style={{ background: c.bg, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12 }}>
-              <Loader2 size={36} className="spin" style={{ color: c.primary }} />
-              <span style={{ fontSize: "0.875rem", color: c.inkSoft, fontWeight: 500 }}>Checking secure session...</span>
+            <div className="screen" style={{ background: c.primary, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", color: "#fff", gap: 16 }}>
+              <div className="brand-mark" style={{ width: 68, height: 68, borderRadius: 20, background: "#fff", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <ShieldCheck size={40} color={c.primary} />
+              </div>
+              <h1 style={{ fontFamily: "'Manrope', sans-serif", fontWeight: 800, fontSize: "1.5rem", margin: 0 }}>RakshaNet</h1>
+              <Loader2 size={24} className="spin" style={{ opacity: 0.8 }} />
             </div>
           )}
           {stage === "login" && (
@@ -1486,15 +2987,112 @@ export default function App() {
           {stage === "home" && (
             <>
               <AppHeader
-                c={c} t={t} location={location}
+                c={c} t={t} location={location} locating={locating}
                 onOpenContacts={() => setContactsOpen(true)}
                 onOpenMenu={() => setMenuOpen(true)}
+                onRefreshLocation={refreshLocation}
               />
-              {activeTab === "maps" && <MapsScreen c={c} />}
-              {activeTab === "report" && <ReportScreen c={c} location={location} />}
-              {activeTab === "sos" && <SosScreen c={c} location={location} contacts={contacts} />}
-              {activeTab === "shelter" && <ShelterScreen c={c} />}
-              {activeTab === "authority" && <AuthorityScreen c={c} reports={reports} setReports={setReports} />}
+
+              {/* Offline Warning Banner */}
+              {!isOnline && (
+                <div style={{ background: c.warnSoft, borderBottom: `1px solid ${c.warn}`, padding: "8px 14px", display: "flex", alignItems: "center", gap: 8, color: c.warn, flexShrink: 0 }}>
+                  <WifiOff size={15} style={{ flexShrink: 0 }} />
+                  <span style={{ fontSize: "0.7812rem", fontWeight: 700, flex: 1 }}>
+                    Offline Mode: Emergencies queue locally ({offlineQueue.length} pending)
+                  </span>
+                  {offlineQueue.length > 0 && (
+                    <button
+                      className="secondary-btn small"
+                      style={{ borderColor: c.warn, color: c.warn, padding: "2px 8px", fontSize: "0.6875rem" }}
+                      onClick={() => {
+                        if (navigator.onLine) {
+                          setIsOnline(true);
+                          syncOfflineQueue().then((cnt) => {
+                            setOfflineQueue(getOfflineQueue());
+                            setSyncToast(cnt > 0 ? `Synced ${cnt} emergency records!` : "");
+                          });
+                        }
+                      }}
+                    >
+                      Sync
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {/* Sync Feedback Toast */}
+              {syncToast && (
+                <div style={{ background: c.safe, color: "#fff", padding: "8px 14px", display: "flex", alignItems: "center", gap: 8, fontSize: "0.7812rem", fontWeight: 700, flexShrink: 0 }}>
+                  <CheckCircle2 size={15} style={{ flexShrink: 0 }} />
+                  <span>{syncToast}</span>
+                </div>
+              )}
+
+              {/* Public Authority Emergency Broadcast Ticker */}
+              {broadcasts.length > 0 && (
+                <div style={{ background: c.critical || c.danger, color: "#fff", padding: "7px 12px", display: "flex", alignItems: "center", gap: 8, fontSize: "0.75rem", flexShrink: 0 }}>
+                  <Radio size={14} className="spin" style={{ flexShrink: 0 }} />
+                  <div style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 700 }}>
+                    {broadcasts[0].title}: {broadcasts[0].message}
+                  </div>
+                  <button className="icon-btn" onClick={() => setBroadcasts((b) => b.slice(1))} style={{ color: "#fff", padding: 0 }} aria-label="Dismiss alert">
+                    <X size={14} />
+                  </button>
+                </div>
+              )}
+
+              {locationError && (
+                <div className="location-error-banner" style={{ background: c.dangerSoft, color: c.danger }}>
+                  <ShieldAlert size={14} />
+                  <span>{locationError}</span>
+                  <button className="icon-btn" onClick={() => setLocationError("")} style={{ marginLeft: "auto", color: c.danger }} aria-label="Dismiss">
+                    <X size={14} />
+                  </button>
+                </div>
+              )}
+              {activeTab === "maps" && (
+                <MapsScreen
+                  c={c}
+                  location={location}
+                  facilities={facilities}
+                  facilitiesStatus={facilitiesStatus}
+                  facilitiesFromCache={facilitiesFromCache}
+                  locating={locating}
+                  onRefreshLocation={refreshLocation}
+                  weatherData={weatherData}
+                  onOpenWeather={() => setWeatherOpen(true)}
+                  facilitiesCachedAt={facilitiesCachedAt}
+                />
+              )}
+              {activeTab === "report" && (
+                <ReportScreen
+                  c={c}
+                  location={location}
+                  isOnline={isOnline}
+                  onQueueReport={handleQueueReport}
+                />
+              )}
+              {activeTab === "sos" && (
+                <SosScreen
+                  c={c}
+                  location={location}
+                  contacts={contacts}
+                  isOnline={isOnline}
+                  phone={phone}
+                  onQueueSos={handleQueueSos}
+                />
+              )}
+              {activeTab === "shelter" && (
+                <ShelterScreen c={c} location={location} facilities={facilities} facilitiesStatus={facilitiesStatus} facilitiesFromCache={facilitiesFromCache} locating={locating} onRefreshLocation={refreshLocation} />
+              )}
+              {activeTab === "authority" && (
+                <AuthorityScreen
+                  c={c}
+                  reports={reports}
+                  setReports={setReports}
+                  onBroadcastAlert={handleBroadcastAlert}
+                />
+              )}
               <BottomNav c={c} t={t} active={activeTab} setActive={setActiveTab} />
 
               <ContactsSheet c={c} open={contactsOpen} onClose={() => setContactsOpen(false)} contacts={contacts} setContacts={setContacts} />
@@ -1502,7 +3100,23 @@ export default function App() {
                 c={c} open={menuOpen} onClose={() => setMenuOpen(false)}
                 theme={theme} setTheme={setTheme} lang={lang} setLang={setLang}
                 sirenOn={sirenOn} toggleSiren={toggleSiren} t={t}
+                onOpenSurvival={() => setSurvivalOpen(true)}
+                notifPermission={notifPermission}
+                onRequestNotif={handleRequestNotif}
                 onLogout={handleLogout}
+              />
+              <WeatherHazardSheet
+                c={c}
+                open={weatherOpen}
+                onClose={() => setWeatherOpen(false)}
+                weatherData={weatherData}
+                weatherLoading={weatherLoading}
+                onRefreshWeather={refreshWeather}
+              />
+              <SurvivalGuidesSheet
+                c={c}
+                open={survivalOpen}
+                onClose={() => setSurvivalOpen(false)}
               />
             </>
           )}

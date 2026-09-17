@@ -3,7 +3,7 @@ import http from "http";
 import fs from "fs";
 import path from "path";
 
-const CHROME_PATH = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
+const CHROME_PATH = "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe";
 const PORT = 9222;
 const USER_DATA_DIR = path.resolve("./.chrome_test_profile");
 
@@ -117,8 +117,8 @@ async function waitForSelector(cdp, selector, timeoutMs = 10000) {
     if (exists) return true;
     await sleep(200);
   }
-  const html = await cdp.eval(`document.body.innerHTML`);
-  throw new Error(`Timeout waiting for selector "${selector}". Body HTML: ${html.slice(0, 300)}`);
+  const screenHtml = await cdp.eval(`document.querySelector('.phone-screen')?.innerHTML || document.body.innerHTML`);
+  throw new Error(`Timeout waiting for selector "${selector}". Screen HTML: ${screenHtml.slice(0, 500)}`);
 }
 
 async function run() {
@@ -134,6 +134,10 @@ async function run() {
   cdp.on("Runtime.consoleAPICalled", (params) => {
     const text = params.args.map((a) => (typeof a.value === "object" ? JSON.stringify(a.value) : a.value)).join(" ");
     console.log(`[BROWSER CONSOLE ${params.type.toUpperCase()}] ${text}`);
+  });
+
+  cdp.on("Runtime.exceptionThrown", (params) => {
+    console.error("[BROWSER EXCEPTION]", JSON.stringify(params.exceptionDetails));
   });
 
   // Enable WebAuthn virtual authenticator
@@ -156,7 +160,9 @@ async function run() {
   await sleep(1500);
 
   // Clear localStorage to start fresh
-  await cdp.eval(`localStorage.clear(); window.location.reload();`);
+  await cdp.eval(`localStorage.clear();`);
+  await cdp.send("Page.reload");
+  await sleep(1500);
   await waitForSelector(cdp, 'input[inputmode="numeric"]');
 
   // Check initial screen
@@ -261,11 +267,9 @@ async function run() {
 
   // Sign out via UI or clear localStorage
   console.log("Signing out user...");
-  await cdp.eval(`(() => {
-    // Clear session and return to login
-    localStorage.clear();
-    window.location.reload();
-  })()`);
+  await cdp.eval(`localStorage.clear();`);
+  await cdp.send("Page.reload");
+  await sleep(1500);
   await waitForSelector(cdp, 'input[inputmode="numeric"]');
 
   // Verify at login screen
@@ -347,7 +351,9 @@ async function run() {
   console.log("========================================================");
 
   // Clear session to return to login
-  await cdp.eval(`(() => { localStorage.clear(); window.location.reload(); })()`);
+  await cdp.eval(`localStorage.clear();`);
+  await cdp.send("Page.reload");
+  await sleep(1500);
   await waitForSelector(cdp, 'input[inputmode="numeric"]');
 
   const UNREGISTERED_PHONE = "9111122222";

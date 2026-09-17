@@ -1,0 +1,11 @@
+{
+  "name": "RakshaNet Emergency & Disaster Response",
+  "short_name": "RakshaNet",
+  "description": "Rapid disaster management, emergency facility locator, and SOS response network",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0F3D5C",
+  "theme_color": "#0F3D5C",
+  "orientation": "portrait",
+  "icons": []
+}

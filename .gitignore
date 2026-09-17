@@ -5,3 +5,6 @@ dist/
 .webauthn_dev_db.json
 supabase/.temp/
 *.timestamp-*.mjs
+# Local WebAuthn/browser test data
+.webauthn_dev_db.json
+.chrome_test_profile/

@@ -155,6 +155,123 @@ npm run dev        # local dev server, defaults to http://localhost:5173
 6. To test cancellation/error handling: dismiss the native prompt — the app should
    show "Passkey authentication was cancelled or timed out." and stay usable.
 
+## Real device location (replaces the old mock map)
+
+The old hardcoded "Kavali, Andhra Pradesh" location and the fake SVG-grid map with
+manually-positioned facility markers have been completely removed. Location, the
+map, nearby facilities, and reverse-geocoded addresses are now all real:
+
+- **Device location**: `navigator.geolocation.getCurrentPosition()` with
+  `enableHighAccuracy: true`, `timeout: 15000`, `maximumAge: 0`
+  (`src/lib/geolocation.js`). No fallback/demo coordinates exist anywhere in the
+  code — on denial/timeout/unavailability the UI shows "Location unavailable" and a
+  **Try Again** action, never a substituted location.
+- **Map**: [Leaflet](https://leafletjs.com/) + [OpenStreetMap](https://www.openstreetmap.org/)
+  raster tiles via `react-leaflet`, centered on the real coordinates, with a
+  "you are here" marker and real facility markers.
+- **Reverse geocoding**: [OpenStreetMap Nominatim](https://nominatim.org/) turns the
+  real lat/lng into a locality/state label (`src/lib/geocoding.js`). On failure it
+  returns `null` and the UI shows "Address unavailable" — it never fabricates a
+  place name, and the real coordinates are kept regardless.
+- **Nearby facilities**: [OpenStreetMap Overpass API](https://overpass-api.de/) query
+  for real `amenity=hospital / police / fire_station` and `emergency=shelter` nodes
+  within ~6 km of the real coordinate (`src/lib/facilities.js`), sorted by real
+  Haversine distance. No seeded/fake facility list exists anymore.
+- A **"Use My Current Location"** control appears in three places — the header
+  (tap the location text), and a refresh icon on both Maps and Shelter — all calling
+  the same real re-fetch pipeline (location → reverse geocode → facilities).
+- Typing a location manually is still available as an explicit fallback (unchanged
+  from before), but it's clearly labeled as not enabling the live map/facilities,
+  since there's no forward-geocoding step converting free text into coordinates in
+  this pass.
+
+### Files created
+- `src/lib/geolocation.js` — Geolocation API wrapper, real error codes only.
+- `src/lib/geocoding.js` — Nominatim reverse geocoding.
+- `src/lib/facilities.js` — Overpass nearby-facility query + Haversine distance.
+- `src/lib/mapIcons.js` — Leaflet default-icon path fix (Vite bundling quirk) + small
+  colored marker icons matching the app's palette.
+
+### Files modified
+- `src/App.jsx` — removed the mock `FACILITIES`/`SHELTERS` arrays and the SVG-grid
+  fake map; rewrote `LocationScreen`, `AppHeader`, `MapsScreen`, `ShelterScreen` to
+  use real data; updated `ReportScreen`/`SosScreen` to display the real location
+  label; root `App` now holds `location` as a real `{lat, lng, accuracy, timestamp,
+  label, source}` object (or `null`) instead of a hardcoded string, added the
+  `refreshLocation()` pipeline and a live facilities-fetch effect. Also de-branded
+  the static demo report history in `SEED_REPORTS` (removed "Kavali"/"Andhra
+  Pradesh" strings — those are unrelated to the live location feature, just old
+  placeholder text).
+- `package.json` — added `leaflet` and `react-leaflet`.
+- `src/main.jsx` — added the required `leaflet/dist/leaflet.css` import.
+
+**Not modified, as instructed**: `src/lib/auth.js`, `src/lib/supabaseClient.js`,
+anything under `supabase/` (Edge Functions, migration, config) — verified untouched.
+
+### Dependencies to install
+```bash
+npm install
+```
+Adds `leaflet` and `react-leaflet` on top of the existing dependencies.
+
+### APIs / services used
+1. **Location API**: browser Geolocation API (`navigator.geolocation.getCurrentPosition`).
+2. **Map technology**: Leaflet + OpenStreetMap tile server (`{s}.tile.openstreetmap.org`).
+3. **Reverse-geocoding service**: OpenStreetMap Nominatim (`nominatim.openstreetmap.org`).
+4. **Nearby-facility data source**: OpenStreetMap Overpass API (`overpass-api.de`).
+
+None of these need an API key, which is why nothing new was added to `.env.example`.
+That's also their limitation: Nominatim and Overpass are free community
+infrastructure with fair-use rate limits — fine for a student/SIH prototype, but a
+real production deployment should self-host these or move to a paid provider
+(Google/Mapbox/HERE) to avoid being rate-limited under real traffic.
+
+### Privacy / where location is (and isn't) stored
+Nothing in this pass sends location to Supabase or anywhere else persistent —
+`location`, `facilities`, and the Report/SOS location labels all live only in
+React state in the browser, exactly like the rest of the app's existing
+(pre-passkey) architecture. The only network calls carrying your coordinates are the
+direct browser→Nominatim and browser→Overpass requests described above (both
+over HTTPS, both free public OSM endpoints, neither requires a key). If you later
+want Reports or SOS alerts to actually persist to Supabase with a location attached,
+that's a new feature to build on top of this — say the word and I'll wire it up
+explicitly rather than assume it.
+
+### How to test real location locally
+1. `npm install && npm run dev`, open `http://localhost:5173` (a real Chrome/Edge
+   tab, not the in-chat preview — see the passkey section above for why).
+2. Log in with a passkey, reach the location screen, tap **Allow while using app**.
+   Chrome will show its native location-permission prompt — accept it.
+3. Confirm: the app shows your real coordinates' locality (or "Address unavailable"
+   if reverse geocoding fails, never a guess), the Maps tab shows a real OpenStreetMap
+   tile map centered on you with a "you are here" marker, and the facility list below
+   it is populated from a live Overpass query (may be empty if there's genuinely
+   nothing tagged nearby on OpenStreetMap — that's real data, not a bug).
+4. Test denial: in Chrome, click the padlock/site-info icon → Site settings →
+   Location → Block, reload, tap **Allow while using app** again — you should see
+   "Location unavailable" with a **Try Again** button, never a fake location.
+5. Test refresh: tap the location text in the header, or the small locate icon on
+   the Maps/Shelter tabs — it should re-request your position and update the map,
+   marker, address, and facility list.
+6. Confirm no "Kavali" (or any other hardcoded place) appears anywhere — it doesn't;
+   verified by grep across the whole file as part of this change.
+
+
+
+1. Run `npm run dev` and open `http://localhost:5173` **directly** (not through any
+   iframe/preview wrapper — see limitation below).
+2. `localhost` is treated as a secure context, so WebAuthn works there without HTTPS.
+3. Enter any valid Indian mobile number (`6`–`9` followed by 9 digits).
+4. Tap **Create Passkey**. Chrome/Edge will show their native "Save a passkey?"
+   dialog. On a laptop without biometric hardware, Chrome falls back to your device
+   PIN or offers to save it to a connected phone/security key/password manager
+   (this is real, not simulated — the browser is doing it).
+5. Refresh the page, enter the **same** number, tap **Continue with Passkey**
+   — the button should already say "Continue with Passkey" once the debounced
+   existence check resolves. The native "Sign in with a passkey?" prompt appears.
+6. To test cancellation/error handling: dismiss the native prompt — the app should
+   show "Passkey authentication was cancelled or timed out." and stay usable.
+
 ## Limitations when testing inside the desktop-browser phone preview
 
 The phone-frame preview you've been seeing in this chat is a component rendered
@@ -177,14 +294,16 @@ text under the button, never a raw DOMException or server error.
 
 ## What's still a prototype
 
-Maps, Report, SOS, Shelter, and Authority are still mock-data/local-state screens,
-unchanged from before. This pass only touched authentication. A real deployment
-still needs: a maps SDK with live facility data, a backend for report/SOS routing
-and notifications, and — if you want other tables protected by Supabase Row Level
-Security tied to the logged-in user — wiring the post-passkey "authenticated" state
-into a full Supabase Auth session (the Edge Functions here return a verified
-`{ id, phone }` and stop there; minting a real GoTrue session from that is a
-follow-up, documented but not implemented, since it wasn't asked for this pass).
+Maps, Shelter, and location are now real (device GPS, OpenStreetMap tiles, Nominatim,
+Overpass) — see above. Report and SOS still use local React state only: submitting a
+report or sending an SOS updates the UI but doesn't call any backend, so nothing is
+actually delivered to a hospital/police/fire department or persisted anywhere. A real
+deployment still needs a backend for report/SOS routing and notifications, and — if
+you want other tables protected by Supabase Row Level Security tied to the logged-in
+user — wiring the post-passkey "authenticated" state into a full Supabase Auth
+session (the Edge Functions here return a verified `{ id, phone }` and stop there;
+minting a real GoTrue session from that is a follow-up, documented but not
+implemented, since it wasn't asked for in the passkey pass).
 
 ## Project structure
 
@@ -200,7 +319,11 @@ rakshanet-app/
 │   ├── App.jsx
 │   └── lib/
 │       ├── supabaseClient.js
-│       └── auth.js
+│       ├── auth.js
+│       ├── geolocation.js
+│       ├── geocoding.js
+│       ├── facilities.js
+│       └── mapIcons.js
 └── supabase/
     ├── migrations/
     │   └── 0001_webauthn_auth.sql

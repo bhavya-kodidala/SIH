@@ -1,5 +1,5 @@
 import { startRegistration, startAuthentication, browserSupportsWebAuthn } from "@simplewebauthn/browser";
-import { invokeEdgeFunction } from "./supabaseClient";
+import { invokeEdgeFunction, supabase } from "./supabaseClient";
 
 const SESSION_STORAGE_KEY = "rakshanet_auth_session";
 
@@ -160,6 +160,11 @@ export async function verifyCurrentSession() {
  * Logs out the user on the server and clears local session.
  */
 export async function logout() {
+  try {
+    await supabase.auth.signOut();
+  } catch (err) {
+    console.warn("[AUTH] Supabase signOut error:", err);
+  }
   const local = getLocalSession();
   if (local?.token) {
     try {
