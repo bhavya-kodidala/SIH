@@ -39,6 +39,12 @@ export function playAlertChime(type = "alert") {
       osc.start(now);
       osc.stop(now + 0.45);
     }
+    // Cleanly close temporary context after chime completes
+    setTimeout(() => {
+      try {
+        if (ctx.state !== "closed") ctx.close().catch(() => {});
+      } catch (_) {}
+    }, 800);
   } catch (err) {
     // AudioContext blocked by browser policy
   }

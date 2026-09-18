@@ -8,7 +8,7 @@
  * - Graceful offline fallbacks for emergency APIs
  */
 
-const APP_CACHE = "rakshanet-app-shell-v4";
+const APP_CACHE = "rakshanet-app-shell-v5";
 const TILE_CACHE = "rakshanet-map-tiles-v1";
 
 const CORE_ASSETS = [

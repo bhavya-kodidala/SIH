@@ -22,6 +22,13 @@ import { getOfflineQueue, queueOfflineItem, syncOfflineQueue } from "./lib/pwa";
 import { generateSosMessage, generateReportMessage, openWhatsApp, openSms, blastWhatsAppToContacts } from "./lib/messaging";
 import { fetchLiveWeatherAndHazard } from "./lib/weather";
 import { playAlertChime, isNotificationSupported, getNotificationPermission, requestNotificationPermission, sendBrowserNotification } from "./lib/notifications";
+import {
+  startEmergencySiren,
+  stopEmergencySiren,
+  toggleEmergencySiren,
+  isEmergencySirenActive,
+  subscribeSirenState,
+} from "./lib/emergencyAudio";
 import { SURVIVAL_GUIDES } from "./lib/survivalGuides";
 import {
   cacheFacilities,
@@ -220,50 +227,20 @@ const SEED_REPORTS = [
    SMALL HELPERS
    ========================================================================= */
 function useAudioSiren() {
-  const ctxRef = useRef(null);
-  const oscRef = useRef(null);
-  const gainRef = useRef(null);
-  const lfoRef = useRef(null);
+  const [active, setActive] = useState(() => isEmergencySirenActive());
 
-  const start = useCallback(() => {
-    try {
-      const Ctx = window.AudioContext || window.webkitAudioContext;
-      if (!Ctx) return;
-      const ctx = new Ctx();
-      const osc = ctx.createOscillator();
-      const lfo = ctx.createOscillator();
-      const lfoGain = ctx.createGain();
-      const gain = ctx.createGain();
-      osc.type = "sine";
-      osc.frequency.value = 700;
-      lfo.type = "sine";
-      lfo.frequency.value = 2.2;
-      lfoGain.gain.value = 300;
-      lfo.connect(lfoGain);
-      lfoGain.connect(osc.frequency);
-      gain.gain.value = 0.05;
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.start();
-      lfo.start();
-      ctxRef.current = ctx;
-      oscRef.current = osc;
-      lfoRef.current = lfo;
-      gainRef.current = gain;
-    } catch (e) { /* audio unavailable */ }
+  useEffect(() => {
+    return subscribeSirenState((isPlaying) => {
+      setActive(isPlaying);
+    });
   }, []);
 
-  const stop = useCallback(() => {
-    try {
-      oscRef.current && oscRef.current.stop();
-      lfoRef.current && lfoRef.current.stop();
-      ctxRef.current && ctxRef.current.close();
-    } catch (e) { /* noop */ }
-    ctxRef.current = null;
-  }, []);
-
-  useEffect(() => () => stop(), [stop]);
-  return { start, stop };
+  return {
+    active,
+    start: startEmergencySiren,
+    stop: stopEmergencySiren,
+    toggle: toggleEmergencySiren,
+  };
 }
 
 function Sheet({ open, onClose, title, children, height = "auto" }) {
@@ -1958,18 +1935,44 @@ function ReportScreen({ c, location, isOnline = true, onQueueReport }) {
   const [type, setType] = useState(null);
   const [description, setDescription] = useState("");
   const [severity, setSeverity] = useState("medium");
-  const [media, setMedia] = useState({ photo: false, video: false, voice: false });
+
+  // Real media state
+  const [photoFile, setPhotoFile] = useState(null);
+  const [photoURL, setPhotoURL] = useState(null);
+  const [videoBlob, setVideoBlob] = useState(null);
+  const [videoURL, setVideoURL] = useState(null);
+  const [voiceBlob, setVoiceBlob] = useState(null);
   const [voiceSeconds, setVoiceSeconds] = useState(0);
   const [recording, setRecording] = useState(false);
+  const [voiceError, setVoiceError] = useState("");
+
+  // Camera / video modal state
+  const [cameraMode, setCameraMode] = useState(null); // null | "photo" | "video"
+  const [facingMode, setFacingMode] = useState("environment"); // "environment" | "user"
+  const [cameraError, setCameraError] = useState("");
+  const [videoRecording, setVideoRecording] = useState(false);
+  const [videoSeconds, setVideoSeconds] = useState(0);
+
   const [recipients, setRecipients] = useState([]);
   const [submitted, setSubmitted] = useState(null);
+
   const timerRef = useRef(null);
+  const videoTimerRef = useRef(null);
+  const mediaRecorderRef = useRef(null);   // for voice
+  const videoRecorderRef = useRef(null);   // for video
+  const audioChunksRef = useRef([]);
+  const videoChunksRef = useRef([]);
+  const cameraStreamRef = useRef(null);
+  const cameraVideoRef = useRef(null);     // <video> element in camera modal
+  const photoInputRef = useRef(null);
+  const videoInputRef = useRef(null);
   const locationLabel = locationDisplayLabel(location);
 
   useEffect(() => {
     if (type && step === 3) setRecipients(RECIPIENTS_BY_TYPE[type.id] || []);
   }, [type, step]);
 
+  // Voice timer
   useEffect(() => {
     if (recording) {
       timerRef.current = setInterval(() => setVoiceSeconds((s) => s + 1), 1000);
@@ -1979,18 +1982,255 @@ function ReportScreen({ c, location, isOnline = true, onQueueReport }) {
     return () => clearInterval(timerRef.current);
   }, [recording]);
 
+  // Video recording timer
+  useEffect(() => {
+    if (videoRecording) {
+      videoTimerRef.current = setInterval(() => setVideoSeconds((s) => s + 1), 1000);
+    } else {
+      clearInterval(videoTimerRef.current);
+    }
+    return () => clearInterval(videoTimerRef.current);
+  }, [videoRecording]);
+
+  // Wire live camera stream to <video> element when modal opens
+  useEffect(() => {
+    if (cameraMode && cameraVideoRef.current && cameraStreamRef.current) {
+      const vid = cameraVideoRef.current;
+      vid.srcObject = cameraStreamRef.current;
+      vid.onloadedmetadata = () => { vid.play().catch(() => {}); };
+      vid.play().catch(() => {});
+    }
+  }, [cameraMode, facingMode]);
+
+  // Cleanup camera + recorders on unmount
+  useEffect(() => {
+    return () => {
+      stopCameraStream();
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") mediaRecorderRef.current.stop();
+      if (videoRecorderRef.current && videoRecorderRef.current.state !== "inactive") videoRecorderRef.current.stop();
+    };
+  }, []);
+
+  // ---------- camera helpers ----------
+  const stopCameraStream = () => {
+    if (cameraStreamRef.current) {
+      cameraStreamRef.current.getTracks().forEach((t) => t.stop());
+      cameraStreamRef.current = null;
+    }
+  };
+
+  const getMediaStream = async (mode, facing = "environment") => {
+    if (!navigator?.mediaDevices?.getUserMedia) {
+      throw new Error("Camera API not supported in this browser environment.");
+    }
+    const videoConstraints = {
+      facingMode: { ideal: facing },
+      width: { ideal: 1280 },
+      height: { ideal: 720 },
+    };
+    try {
+      return await navigator.mediaDevices.getUserMedia(
+        mode === "photo"
+          ? { video: videoConstraints, audio: false }
+          : { video: videoConstraints, audio: true }
+      );
+    } catch (e1) {
+      if (mode === "video") {
+        try {
+          return await navigator.mediaDevices.getUserMedia({
+            video: videoConstraints,
+            audio: false,
+          });
+        } catch (e2) {}
+      }
+      try {
+        return await navigator.mediaDevices.getUserMedia(
+          mode === "photo"
+            ? { video: true, audio: false }
+            : { video: true, audio: true }
+        );
+      } catch (e3) {
+        return await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      }
+    }
+  };
+
+  const openCamera = async (mode, facing = facingMode) => {
+    setCameraError("");
+    setVideoSeconds(0);
+    setVideoRecording(false);
+    stopCameraStream();
+
+    try {
+      const stream = await getMediaStream(mode, facing);
+      cameraStreamRef.current = stream;
+      setCameraMode(mode);
+      if (cameraVideoRef.current) {
+        cameraVideoRef.current.srcObject = stream;
+        cameraVideoRef.current.play().catch(() => {});
+      }
+    } catch (err) {
+      console.warn("Camera error:", err);
+      setCameraError(
+        err.name === "NotAllowedError" || err.name === "PermissionDeniedError"
+          ? "Camera access denied. Please allow camera permissions in your browser or select a file below."
+          : err.name === "NotFoundError" || err.name === "DevicesNotFoundError"
+          ? "No camera found on this device. You can select an image/video file below."
+          : "Camera error: " + (err.message || "Please grant permissions or select a file.")
+      );
+    }
+  };
+
+  const flipCamera = async () => {
+    const nextFacing = facingMode === "environment" ? "user" : "environment";
+    setFacingMode(nextFacing);
+    if (cameraMode) {
+      await openCamera(cameraMode, nextFacing);
+    }
+  };
+
+  const closeCamera = () => {
+    if (videoRecorderRef.current && videoRecorderRef.current.state !== "inactive") {
+      videoRecorderRef.current.stop();
+    }
+    stopCameraStream();
+    setCameraMode(null);
+    setVideoRecording(false);
+  };
+
+  // Capture a still photo from the live video stream
+  const capturePhoto = () => {
+    const video = cameraVideoRef.current;
+    if (!video) return;
+    const canvas = document.createElement("canvas");
+    const w = video.videoWidth || 640;
+    const h = video.videoHeight || 480;
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    if (facingMode === "user") {
+      ctx.translate(w, 0);
+      ctx.scale(-1, 1);
+    }
+    ctx.drawImage(video, 0, 0, w, h);
+    canvas.toBlob((blob) => {
+      if (blob) {
+        const url = URL.createObjectURL(blob);
+        setPhotoFile(blob);
+        setPhotoURL(url);
+        closeCamera();
+      }
+    }, "image/jpeg", 0.92);
+  };
+
+  // Start recording video from the live stream
+  const startVideoRecording = () => {
+    const stream = cameraStreamRef.current;
+    if (!stream) return;
+    videoChunksRef.current = [];
+    let options = {};
+    if (typeof MediaRecorder !== "undefined") {
+      if (MediaRecorder.isTypeSupported("video/webm;codecs=vp9")) options = { mimeType: "video/webm;codecs=vp9" };
+      else if (MediaRecorder.isTypeSupported("video/webm")) options = { mimeType: "video/webm" };
+      else if (MediaRecorder.isTypeSupported("video/mp4")) options = { mimeType: "video/mp4" };
+    }
+    try {
+      const mr = new MediaRecorder(stream, options);
+      videoRecorderRef.current = mr;
+      mr.ondataavailable = (e) => { if (e.data.size > 0) videoChunksRef.current.push(e.data); };
+      mr.onstop = () => {
+        const blob = new Blob(videoChunksRef.current, { type: mr.mimeType || "video/webm" });
+        const url = URL.createObjectURL(blob);
+        setVideoBlob(blob);
+        setVideoURL(url);
+        closeCamera();
+      };
+      mr.start(100);
+      setVideoSeconds(0);
+      setVideoRecording(true);
+    } catch (err) {
+      console.error("MediaRecorder start failed:", err);
+      setCameraError("Video recording failed to start: " + err.message);
+    }
+  };
+
+  const stopVideoRecording = () => {
+    if (videoRecorderRef.current && videoRecorderRef.current.state !== "inactive") {
+      videoRecorderRef.current.stop();
+    }
+    setVideoRecording(false);
+  };
+
+  const handlePhotoFileChange = (e) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      setPhotoFile(file);
+      setPhotoURL(URL.createObjectURL(file));
+      setCameraError("");
+    }
+  };
+
+  const handleVideoFileChange = (e) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      setVideoBlob(file);
+      setVideoURL(URL.createObjectURL(file));
+      setCameraError("");
+    }
+  };
+
+  // ---------- voice helpers ----------
+  const startVoiceRecording = async () => {
+    setVoiceError("");
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      audioChunksRef.current = [];
+      const mr = new MediaRecorder(stream);
+      mediaRecorderRef.current = mr;
+      mr.ondataavailable = (e) => { if (e.data.size > 0) audioChunksRef.current.push(e.data); };
+      mr.onstop = () => {
+        const blob = new Blob(audioChunksRef.current, { type: "audio/webm" });
+        setVoiceBlob(blob);
+        stream.getTracks().forEach((t) => t.stop());
+      };
+      mr.start();
+      setVoiceSeconds(0);
+      setRecording(true);
+    } catch (err) {
+      setVoiceError("Microphone access denied. Please allow mic permissions.");
+    }
+  };
+
+  const stopVoiceRecording = () => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+      mediaRecorderRef.current.stop();
+    }
+    setRecording(false);
+  };
+
   const toggleRecipient = (r) => {
     setRecipients((prev) => (prev.includes(r) ? prev.filter((x) => x !== r) : [...prev, r]));
   };
 
   const reset = () => {
     setStep(1); setType(null); setDescription(""); setSeverity("medium");
-    setMedia({ photo: false, video: false, voice: false }); setVoiceSeconds(0);
-    setRecording(false); setRecipients([]); setSubmitted(null);
+    setPhotoFile(null); setPhotoURL(null); setVideoBlob(null); setVideoURL(null); setVoiceBlob(null);
+    setVoiceSeconds(0); setRecording(false); setVoiceError("");
+    setCameraMode(null); setCameraError(""); setVideoRecording(false); setVideoSeconds(0);
+    setRecipients([]); setSubmitted(null);
+    stopCameraStream();
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+      mediaRecorderRef.current.stop();
+    }
   };
 
   const submit = () => {
     const id = "RN-" + Math.floor(10000 + Math.random() * 89999);
+    const mediaAttachments = [
+      ...(photoFile ? [{ type: "photo", name: "photo.jpg", size: photoFile.size, blob: photoFile, url: photoURL }] : []),
+      ...(videoBlob ? [{ type: "video", name: "video.webm", size: videoBlob.size, blob: videoBlob, url: videoURL }] : []),
+      ...(voiceBlob ? [{ type: "voice", name: "voice-note.webm", size: voiceBlob.size, blob: voiceBlob }] : []),
+    ];
     const reportObj = {
       id,
       type,
@@ -2003,6 +2243,7 @@ function ReportScreen({ c, location, isOnline = true, onQueueReport }) {
       status: 0,
       authority: AUTHORITY_FOR[type?.id] || "Disaster Management Authority",
       isOffline: !isOnline,
+      mediaAttachments,
     };
 
     if (!isOnline && onQueueReport) {
@@ -2049,6 +2290,9 @@ function ReportScreen({ c, location, isOnline = true, onQueueReport }) {
           <div className="summary-line"><span style={{ color: c.inkSoft }}>Severity</span><span style={{ color: c.ink }}>{SEVERITIES.find(s => s.id === submitted.severity)?.label}</span></div>
           <div className="summary-line"><span style={{ color: c.inkSoft }}>Location</span><span style={{ color: c.ink }}>{submitted.locationLabel}</span></div>
           <div className="summary-line"><span style={{ color: c.inkSoft }}>Sent to</span><span style={{ color: c.ink, textAlign: "right" }}>{submitted.recipients.join(", ")}</span></div>
+          {submitted.mediaAttachments?.length > 0 && (
+            <div className="summary-line"><span style={{ color: c.inkSoft }}>Evidence</span><span style={{ color: c.safe, fontWeight: 700 }}>{submitted.mediaAttachments.length} file{submitted.mediaAttachments.length > 1 ? "s" : ""} attached</span></div>
+          )}
         </div>
 
         {/* Share via WhatsApp and SMS */}
@@ -2136,33 +2380,195 @@ function ReportScreen({ c, location, isOnline = true, onQueueReport }) {
               </button>
             ))}
           </div>
-          <div className="field-label" style={{ color: c.inkSoft, marginTop: 14 }}>Attachments</div>
+          <div className="field-label" style={{ color: c.inkSoft, marginTop: 14 }}>Evidence Attachments</div>
+          {cameraError && (
+            <div style={{ background: c.dangerSoft, border: `1px solid ${c.danger}`, borderRadius: 8, padding: "8px 12px", marginBottom: 10 }}>
+              <p style={{ color: c.danger, fontSize: "0.74rem", margin: 0, fontWeight: 600 }}>{cameraError}</p>
+              <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+                <button
+                  type="button"
+                  style={{ background: c.surface, border: `1px solid ${c.border}`, borderRadius: 6, padding: "4px 10px", fontSize: "0.72rem", color: c.ink, cursor: "pointer", fontWeight: 600 }}
+                  onClick={() => photoInputRef.current?.click()}
+                >
+                  📁 Select Photo File
+                </button>
+                <button
+                  type="button"
+                  style={{ background: c.surface, border: `1px solid ${c.border}`, borderRadius: 6, padding: "4px 10px", fontSize: "0.72rem", color: c.ink, cursor: "pointer", fontWeight: 600 }}
+                  onClick={() => videoInputRef.current?.click()}
+                >
+                  📁 Select Video File
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Hidden file inputs for fallback / gallery selection */}
+          <input ref={photoInputRef} type="file" accept="image/*" style={{ display: "none" }} onChange={handlePhotoFileChange} />
+          <input ref={videoInputRef} type="file" accept="video/*" style={{ display: "none" }} onChange={handleVideoFileChange} />
+
           <div className="attach-row">
-            <button className="attach-btn" style={{ borderColor: media.photo ? c.primary : c.border, color: media.photo ? c.primary : c.ink }} onClick={() => setMedia((m) => ({ ...m, photo: !m.photo }))}>
-              <Camera size={20} /><span>Photo</span>
-            </button>
-            <button className="attach-btn" style={{ borderColor: media.video ? c.primary : c.border, color: media.video ? c.primary : c.ink }} onClick={() => setMedia((m) => ({ ...m, video: !m.video }))}>
-              <Video size={20} /><span>Video</span>
-            </button>
+            {/* PHOTO — opens live camera */}
             <button
               className="attach-btn"
-              style={{ borderColor: recording ? c.danger : (media.voice ? c.primary : c.border), color: recording ? c.danger : (media.voice ? c.primary : c.ink) }}
-              onClick={() => {
-                if (recording) { setRecording(false); setMedia((m) => ({ ...m, voice: true })); }
-                else { setVoiceSeconds(0); setRecording(true); }
+              style={{ borderColor: photoFile ? c.primary : c.border, color: photoFile ? c.primary : c.ink, flexDirection: "column", gap: 4 }}
+              onClick={() => openCamera("photo")}
+            >
+              {photoURL
+                ? <img src={photoURL} alt="preview" style={{ width: 36, height: 36, objectFit: "cover", borderRadius: 6 }} />
+                : <Camera size={20} />}
+              <span style={{ fontSize: "0.68rem" }}>{photoFile ? "✓ Retake" : "Camera"}</span>
+            </button>
+
+            {/* VIDEO — opens live camera for recording */}
+            <button
+              className="attach-btn"
+              style={{ borderColor: videoBlob ? c.primary : c.border, color: videoBlob ? c.primary : c.ink, flexDirection: "column", gap: 4 }}
+              onClick={() => openCamera("video")}
+            >
+              <Video size={20} />
+              <span style={{ fontSize: "0.68rem" }}>{videoBlob ? `✓ ${(videoBlob.size / 1048576).toFixed(1)} MB` : "Video"}</span>
+            </button>
+
+            {/* VOICE */}
+            <button
+              className="attach-btn"
+              style={{
+                borderColor: recording ? c.danger : voiceBlob ? c.primary : c.border,
+                color: recording ? c.danger : voiceBlob ? c.primary : c.ink,
+                flexDirection: "column", gap: 4,
               }}
+              onClick={() => { recording ? stopVoiceRecording() : startVoiceRecording(); }}
             >
               <Mic size={20} />
-              <span>{recording ? `${String(Math.floor(voiceSeconds / 60)).padStart(2, "0")}:${String(voiceSeconds % 60).padStart(2, "0")}` : media.voice ? "Recorded" : "Voice note"}</span>
+              <span style={{ fontSize: "0.68rem" }}>
+                {recording
+                  ? `⏺ ${String(Math.floor(voiceSeconds / 60)).padStart(2, "0")}:${String(voiceSeconds % 60).padStart(2, "0")}`
+                  : voiceBlob
+                  ? `✓ ${voiceSeconds}s`
+                  : "Voice"}
+              </span>
             </button>
           </div>
-          <p className="fine-print" style={{ color: c.inkSoft }}>Recording a voice message helps when typing is difficult during a stressful situation.</p>
+          {voiceError && <p style={{ color: c.danger, fontSize: "0.72rem", marginTop: 4 }}>{voiceError}</p>}
+          {voiceBlob && !recording && (
+            <div style={{ marginTop: 6 }}>
+              <audio controls src={URL.createObjectURL(voiceBlob)} style={{ width: "100%", height: 32, borderRadius: 8 }} />
+            </div>
+          )}
+          {videoURL && !cameraMode && (
+            <div style={{ marginTop: 6 }}>
+              <video controls src={videoURL} style={{ width: "100%", borderRadius: 8, maxHeight: 110 }} />
+            </div>
+          )}
+          <p className="fine-print" style={{ color: c.inkSoft }}>Tap Camera or Video to capture evidence in real-time.</p>
           <div className="two-btn-row">
             <button className="secondary-btn flex1" style={{ borderColor: c.border, color: c.ink }} onClick={() => setStep(1)}>Back</button>
             <button className="primary-btn flex1" disabled={!description.trim()} style={{ background: description.trim() ? c.primary : c.border, color: "#fff" }} onClick={() => setStep(3)}>Continue</button>
           </div>
         </>
       )}
+
+      {/* ===== IN-APP CAMERA MODAL OVERLAY ===== */}
+      {cameraMode && (
+        <div style={{
+          position: "absolute", inset: 0, zIndex: 999,
+          background: "#000",
+          display: "flex", flexDirection: "column",
+          borderRadius: "inherit",
+          overflow: "hidden",
+        }}>
+          <video
+            ref={(el) => {
+              cameraVideoRef.current = el;
+              if (el && cameraStreamRef.current && el.srcObject !== cameraStreamRef.current) {
+                el.srcObject = cameraStreamRef.current;
+                el.onloadedmetadata = () => { el.play().catch(() => {}); };
+                el.play().catch(() => {});
+              }
+            }}
+            autoPlay
+            playsInline
+            muted
+            style={{
+              flex: 1,
+              width: "100%",
+              height: "100%",
+              objectFit: "cover",
+              transform: facingMode === "user" ? "scaleX(-1)" : "none",
+            }}
+          />
+          <div style={{
+            position: "absolute", top: 0, left: 0, right: 0,
+            display: "flex", alignItems: "center", justifyContent: "space-between",
+            padding: "12px 16px",
+            background: "linear-gradient(to bottom, rgba(0,0,0,0.7), transparent)",
+            zIndex: 10,
+          }}>
+            <span style={{ color: "#fff", fontWeight: 700, fontSize: "0.9rem" }}>
+              {cameraMode === "photo" ? "📷 Take Photo" : "🎥 Record Video"}
+            </span>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <button
+                type="button"
+                onClick={flipCamera}
+                title="Switch Camera (Front/Back)"
+                style={{ background: "rgba(255,255,255,0.25)", border: "none", borderRadius: "50%", width: 34, height: 34, color: "#fff", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
+              >
+                <RefreshCw size={16} />
+              </button>
+              <button
+                type="button"
+                onClick={closeCamera}
+                title="Close Camera"
+                style={{ background: "rgba(255,255,255,0.25)", border: "none", borderRadius: "50%", width: 34, height: 34, color: "#fff", cursor: "pointer", fontSize: "1rem", display: "flex", alignItems: "center", justifyContent: "center" }}
+              >✕</button>
+            </div>
+          </div>
+          {videoRecording && (
+            <div style={{ position: "absolute", top: 52, left: 0, right: 0, display: "flex", justifyContent: "center", zIndex: 10 }}>
+              <div style={{ background: "rgba(214,40,40,0.88)", borderRadius: 20, padding: "4px 14px", display: "flex", alignItems: "center", gap: 6 }}>
+                <div style={{ width: 8, height: 8, borderRadius: "50%", background: "#fff" }} />
+                <span style={{ color: "#fff", fontSize: "0.8rem", fontWeight: 700 }}>
+                  REC {String(Math.floor(videoSeconds / 60)).padStart(2, "0")}:{String(videoSeconds % 60).padStart(2, "0")}
+                </span>
+              </div>
+            </div>
+          )}
+          <div style={{
+            position: "absolute", bottom: 0, left: 0, right: 0,
+            display: "flex", justifyContent: "center", alignItems: "center",
+            paddingBottom: 28, paddingTop: 16,
+            background: "linear-gradient(to top, rgba(0,0,0,0.7), transparent)",
+            zIndex: 10,
+          }}>
+            {cameraMode === "photo" ? (
+              <button
+                type="button"
+                onClick={capturePhoto}
+                style={{ width: 66, height: 66, borderRadius: "50%", background: "#fff", border: "5px solid rgba(255,255,255,0.4)", cursor: "pointer", boxShadow: "0 0 0 3px rgba(255,255,255,0.25)" }}
+              />
+            ) : (
+              <button
+                type="button"
+                onClick={videoRecording ? stopVideoRecording : startVideoRecording}
+                style={{
+                  width: 66, height: 66, borderRadius: "50%",
+                  background: videoRecording ? "#D62828" : "#fff",
+                  border: "5px solid rgba(255,255,255,0.4)",
+                  cursor: "pointer", boxShadow: "0 0 0 3px rgba(255,255,255,0.25)",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                }}
+              >
+                {videoRecording
+                  ? <Square size={22} color="#fff" fill="#fff" />
+                  : <div style={{ width: 20, height: 20, borderRadius: "50%", background: "#D62828" }} />}
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
 
       {step === 3 && (
         <>
@@ -2193,7 +2599,7 @@ function ReportScreen({ c, location, isOnline = true, onQueueReport }) {
             <div className="summary-line"><span style={{ color: c.inkSoft }}>Description</span><span style={{ color: c.ink, textAlign: "right", maxWidth: 180 }}>{description}</span></div>
             <div className="summary-line"><span style={{ color: c.inkSoft }}>Location</span><span style={{ color: c.ink }}>{locationLabel}</span></div>
             <div className="summary-line"><span style={{ color: c.inkSoft }}>Severity</span><span style={{ color: c.ink }}>{SEVERITIES.find(s => s.id === severity)?.label}</span></div>
-            <div className="summary-line"><span style={{ color: c.inkSoft }}>Media</span><span style={{ color: c.ink }}>{[media.photo && "Photo", media.video && "Video", media.voice && "Voice note"].filter(Boolean).join(", ") || "None"}</span></div>
+            <div className="summary-line"><span style={{ color: c.inkSoft }}>Evidence</span><span style={{ color: c.ink }}>{[photoFile && "📷 Photo", videoFile && "🎥 Video", voiceBlob && "🎙️ Voice note"].filter(Boolean).join(", ") || "None"}</span></div>
             <div className="summary-line"><span style={{ color: c.inkSoft }}>Recipients</span><span style={{ color: c.ink, textAlign: "right", maxWidth: 180 }}>{recipients.join(", ")}</span></div>
           </div>
           <div className="two-btn-row">
@@ -2233,6 +2639,7 @@ function SosScreen({ c, location, contacts, isOnline = true, phone = "", onQueue
 
   const handleTriggerSos = () => {
     setState("sent");
+    startEmergencySiren();
     const sosPayload = {
       type: "SOS",
       category,
@@ -2333,7 +2740,15 @@ function SosScreen({ c, location, contacts, isOnline = true, phone = "", onQueue
           )}
         </div>
 
-        <button className="secondary-btn" style={{ borderColor: c.border, color: c.inkSoft, width: "100%", marginTop: 8 }} onClick={() => { setState("idle"); setCategory(null); }}>
+        <button
+          className="secondary-btn"
+          style={{ borderColor: c.border, color: c.inkSoft, width: "100%", marginTop: 8 }}
+          onClick={() => {
+            stopEmergencySiren();
+            setState("idle");
+            setCategory(null);
+          }}
+        >
           Cancel alert
         </button>
       </div>
@@ -2362,11 +2777,22 @@ function SosScreen({ c, location, contacts, isOnline = true, phone = "", onQueue
           className={"sos-big-btn" + (state === "pressing" ? " pressing" : "")}
           style={{ background: c.danger }}
           onMouseDown={() => setState("pressing")}
-          onMouseUp={() => setState("idle")}
+          onMouseUp={() => {
+            if (state === "pressing") {
+              handleTriggerSos();
+            }
+          }}
           onMouseLeave={() => state === "pressing" && setState("idle")}
           onTouchStart={() => setState("pressing")}
-          onTouchEnd={() => handleTriggerSos()}
-          onClick={() => { if (state !== "pressing") handleTriggerSos(); }}
+          onTouchEnd={(e) => {
+            e.preventDefault();
+            handleTriggerSos();
+          }}
+          onClick={() => {
+            if (state !== "sent") {
+              handleTriggerSos();
+            }
+          }}
           disabled={!category}
         >
           <Siren size={38} color="#fff" />
@@ -2843,7 +3269,6 @@ export default function App() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [weatherOpen, setWeatherOpen] = useState(false);
   const [survivalOpen, setSurvivalOpen] = useState(false);
-  const [sirenOn, setSirenOn] = useState(false);
   const [isOnline, setIsOnline] = useState(typeof navigator !== "undefined" ? navigator.onLine : true);
   const [offlineQueue, setOfflineQueue] = useState(() => getOfflineQueue());
   const [syncToast, setSyncToast] = useState("");
@@ -2876,10 +3301,7 @@ export default function App() {
   const t = STRINGS[lang];
 
   const toggleSiren = () => {
-    setSirenOn((on) => {
-      if (!on) siren.start(); else siren.stop();
-      return !on;
-    });
+    siren.toggle();
   };
 
   // ── Session Restoration (Real Supabase & Passkey Auth) ───────────────────
@@ -3004,6 +3426,7 @@ export default function App() {
   }, [phone]);
   const handleLogout = async () => {
     console.log("[AUTH] Initiating sign out...");
+    stopEmergencySiren();
     try {
       await supabase.auth.signOut();
     } catch (err) {
@@ -4011,7 +4434,7 @@ export default function App() {
               <MenuSheet
                 c={c} open={menuOpen} onClose={() => setMenuOpen(false)}
                 theme={theme} setTheme={setTheme} lang={lang} setLang={setLang}
-                sirenOn={sirenOn} toggleSiren={toggleSiren} t={t}
+                sirenOn={siren.active} toggleSiren={toggleSiren} t={t}
                 onOpenSurvival={() => setSurvivalOpen(true)}
                 notifPermission={notifPermission}
                 onRequestNotif={handleRequestNotif}
