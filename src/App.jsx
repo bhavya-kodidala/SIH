@@ -15,7 +15,7 @@ import {
 import { checkUserExists, registerPasskey, loginWithPasskey, isWebAuthnSupported, verifyCurrentSession, logout, clearSession } from "./lib/auth";
 import { supabase } from "./lib/supabaseClient";
 import { getCurrentPosition, watchDeviceLocation } from "./lib/geolocation";
-import { reverseGeocode } from "./lib/geocoding";
+import { reverseGeocode, searchLocation } from "./lib/geocoding";
 import { fetchNearbyFacilities } from "./lib/facilities";
 import { coloredDotIcon, youAreHereIcon } from "./lib/mapIcons";
 import { getOfflineQueue, queueOfflineItem, syncOfflineQueue } from "./lib/pwa";
@@ -35,7 +35,13 @@ import {
   saveEmergencyContacts,
   getEmergencyContacts,
 } from "./lib/offlineDb";
-import { cacheEmergencyAreaTiles, getCachedMapStatus } from "./lib/mapTiles";
+import {
+  cacheEmergencyAreaTiles,
+  getCachedMapStatus,
+  clearOfflineMapCache,
+  estimateTileCountAndSize,
+  OfflineTileLayer,
+} from "./lib/mapTiles";
 import { initAutoSync, syncPendingEmergencyQueue, subscribeToSyncEvents } from "./lib/syncManager";
 
 
@@ -454,6 +460,37 @@ function LocationScreen({ c, t, onDone }) {
   const [phase, setPhase] = useState("asking"); // asking | fetching | found | error | manual
   const [errorMsg, setErrorMsg] = useState("");
   const [manualText, setManualText] = useState("");
+  const [manualResults, setManualResults] = useState([]);
+  const [manualSearching, setManualSearching] = useState(false);
+  const debounceRef = useRef(null);
+
+  // Live search when typing manually
+  useEffect(() => {
+    if (phase !== "manual") return;
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (!manualText || manualText.trim().length < 2) {
+      setManualResults([]);
+      setManualSearching(false);
+      return;
+    }
+    debounceRef.current = setTimeout(async () => {
+      if (!navigator.onLine) {
+        setManualResults([]);
+        setManualSearching(false);
+        return;
+      }
+      setManualSearching(true);
+      try {
+        const found = await searchLocation(manualText.trim());
+        setManualResults(found);
+      } catch {
+        setManualResults([]);
+      } finally {
+        setManualSearching(false);
+      }
+    }, 400);
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
+  }, [manualText, phase]);
 
   const runLocate = async () => {
     setPhase("fetching");
@@ -524,7 +561,7 @@ function LocationScreen({ c, t, onDone }) {
               : phase === "error"
               ? "Location Unavailable"
               : phase === "manual"
-              ? t.manualLoc
+              ? "Set Location Manually"
               : t.allowLoc}
           </h2>
 
@@ -536,7 +573,7 @@ function LocationScreen({ c, t, onDone }) {
               : phase === "error"
               ? errorMsg || "We could not access your device location. Try again or enter manually."
               : phase === "manual"
-              ? "Enter your district, city, or village name to view nearby emergency resources."
+              ? "Search by street name, landmark, town, city or pincode for exact coordinates."
               : "RakshaNet requires device GPS to route live SOS alerts, dispatch rescue teams, and map open shelters."}
           </p>
         </div>
@@ -578,29 +615,120 @@ function LocationScreen({ c, t, onDone }) {
 
         {/* Manual Input Mode Form */}
         {phase === "manual" && (
-          <div className="manual-loc-card" style={{ background: c.surface, borderColor: c.border }}>
+          <div className="manual-loc-card" style={{ background: c.surface, borderColor: c.border, display: "flex", flexDirection: "column", gap: 10 }}>
             <label style={{ fontSize: "0.8125rem", fontWeight: 700, color: c.ink, fontFamily: "'Manrope', sans-serif" }}>
-              Enter City, Town, or Village
+              Enter Street, Locality, City, or Pincode
             </label>
-            <input
-              className="manual-loc-input"
-              placeholder="e.g. Vijayawada, Guntur, Hyderabad"
-              value={manualText}
-              onChange={(e) => setManualText(e.target.value)}
-              style={{ borderColor: c.border, color: c.ink, background: c.surfaceAlt }}
-              autoFocus
-            />
+            <div style={{ position: "relative" }}>
+              <input
+                className="manual-loc-input"
+                placeholder="e.g. MG Road Vijayawada, or 520001"
+                value={manualText}
+                onChange={(e) => setManualText(e.target.value)}
+                style={{ borderColor: c.border, color: c.ink, background: c.surfaceAlt, width: "100%", paddingRight: manualSearching ? 34 : 12 }}
+                autoFocus
+              />
+              {manualSearching && (
+                <Loader2 size={15} className="spin" color={c.primary} style={{ position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)" }} />
+              )}
+            </div>
+
+            {/* Results list */}
+            {manualResults.length > 0 && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 180, overflowY: "auto" }}>
+                {manualResults.map((r, i) => (
+                  <button
+                    key={i}
+                    onClick={() => {
+                      onDone({
+                        lat: r.lat,
+                        lng: r.lng,
+                        accuracy: null,
+                        timestamp: Date.now(),
+                        status: "Active",
+                        label: r.label || r.displayName,
+                        source: "manual",
+                      });
+                    }}
+                    style={{
+                      textAlign: "left", padding: "9px 11px", borderRadius: 10,
+                      border: `1px solid ${c.border}`, background: c.surfaceAlt,
+                      cursor: "pointer", display: "flex", alignItems: "flex-start", gap: 8,
+                    }}
+                  >
+                    <MapPin size={15} color={c.primary} style={{ flexShrink: 0, marginTop: 2 }} />
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontWeight: 700, fontSize: "0.8125rem", color: c.ink, lineHeight: 1.35 }}>
+                        {r.label || r.displayName}
+                      </div>
+                      <div style={{ fontSize: "0.6875rem", color: c.inkSoft, marginTop: 2, fontFamily: "monospace" }}>
+                        {r.lat.toFixed(4)}, {r.lng.toFixed(4)}
+                      </div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+
             <button
               className="primary-btn"
-              disabled={!manualText.trim()}
+              disabled={!manualText.trim() || manualSearching}
               style={{ background: manualText.trim() ? c.primary : c.border, color: "#fff", height: 42 }}
-              onClick={() => onDone({ lat: null, lng: null, accuracy: null, timestamp: Date.now(), label: manualText.trim(), source: "manual" })}
+              onClick={async () => {
+                if (manualResults.length > 0) {
+                  const r = manualResults[0];
+                  onDone({
+                    lat: r.lat,
+                    lng: r.lng,
+                    accuracy: null,
+                    timestamp: Date.now(),
+                    status: "Active",
+                    label: r.label || r.displayName,
+                    source: "manual",
+                  });
+                  return;
+                }
+                setManualSearching(true);
+                try {
+                  const found = await searchLocation(manualText.trim());
+                  if (found.length > 0) {
+                    const r = found[0];
+                    onDone({
+                      lat: r.lat,
+                      lng: r.lng,
+                      accuracy: null,
+                      timestamp: Date.now(),
+                      status: "Active",
+                      label: r.label || r.displayName,
+                      source: "manual",
+                    });
+                    return;
+                  }
+                } catch {}
+                finally {
+                  setManualSearching(false);
+                }
+                // Fallback if search returns nothing
+                onDone({
+                  lat: null,
+                  lng: null,
+                  accuracy: null,
+                  timestamp: Date.now(),
+                  label: manualText.trim(),
+                  source: "manual",
+                });
+              }}
             >
-              {t.continueApp}
+              {manualSearching ? "Searching…" : t.continueApp}
             </button>
-            <p className="fine-print" style={{ color: c.inkSoft, textAlign: "center", margin: 0 }}>
-              Note: Live map pins and distance calculations require real GPS.
-            </p>
+
+            <button
+              className="text-btn"
+              style={{ color: c.inkSoft, fontSize: "0.78rem" }}
+              onClick={() => setPhase("asking")}
+            >
+              ← Back to GPS Auto-Detect
+            </button>
           </div>
         )}
 
@@ -666,6 +794,261 @@ function LocationScreen({ c, t, onDone }) {
 }
 
 /* =========================================================================
+   LOCATION PICKER SHEET
+   ========================================================================= */
+
+function LocationPickerSheet({ c, open, onClose, onSelectLocation, onUseGPS, locating, currentLocation }) {
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState([]);
+  const [searching, setSearching] = useState(false);
+  const [searched, setSearched] = useState(false); // true once a search completes
+  const [noNetwork, setNoNetwork] = useState(false);
+  const debounceRef = useRef(null);
+  const inputRef = useRef(null);
+
+  // Reset when sheet opens
+  useEffect(() => {
+    if (open) {
+      setQuery("");
+      setResults([]);
+      setSearched(false);
+      setNoNetwork(false);
+      setTimeout(() => inputRef.current?.focus(), 120);
+    }
+  }, [open]);
+
+  // Debounced search
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (!query || query.trim().length < 2) {
+      setResults([]);
+      setSearched(false);
+      return;
+    }
+    debounceRef.current = setTimeout(async () => {
+      if (!navigator.onLine) {
+        setNoNetwork(true);
+        setResults([]);
+        setSearched(true);
+        return;
+      }
+      setNoNetwork(false);
+      setSearching(true);
+      try {
+        const found = await searchLocation(query);
+        setResults(found);
+        setSearched(true);
+      } catch {
+        setResults([]);
+        setSearched(true);
+      } finally {
+        setSearching(false);
+      }
+    }, 450);
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
+  }, [query]);
+
+  if (!open) return null;
+
+  return (
+    <Sheet open={open} onClose={onClose} title="Set Location" height="85vh">
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+
+        {/* Current Active Location Card */}
+        {currentLocation && (
+          <div style={{
+            background: c.surfaceAlt,
+            border: `1px solid ${c.border}`,
+            borderRadius: 12,
+            padding: "10px 12px",
+            display: "flex",
+            flexDirection: "column",
+            gap: 4,
+          }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <span style={{ fontSize: "0.6875rem", fontWeight: 800, letterSpacing: "0.05em", color: c.inkSoft }}>
+                CURRENT ACTIVE LOCATION
+              </span>
+              <span style={{
+                fontSize: "0.625rem", fontWeight: 700, padding: "2px 7px", borderRadius: 6,
+                background: currentLocation.source === "manual" ? `${c.primary}25` : "rgba(18,128,95,0.2)",
+                color: currentLocation.source === "manual" ? c.primary : "#12805f",
+              }}>
+                {currentLocation.source === "manual" ? "Manually Set" : "Device GPS"}
+              </span>
+            </div>
+            <div style={{ fontSize: "0.8438rem", fontWeight: 700, color: c.ink, lineHeight: 1.4, wordBreak: "break-word" }}>
+              {currentLocation.label || "Address unavailable"}
+            </div>
+            {currentLocation.lat != null && currentLocation.lng != null && (
+              <div style={{ fontSize: "0.6875rem", color: c.inkSoft, fontFamily: "monospace" }}>
+                Coordinates: {currentLocation.lat.toFixed(5)}, {currentLocation.lng.toFixed(5)}
+                {currentLocation.accuracy != null ? ` (±${Math.round(currentLocation.accuracy)}m)` : ""}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* GPS Reset button */}
+        <button
+          onClick={() => { onUseGPS(); onClose(); }}
+          disabled={locating}
+          style={{
+            width: "100%",
+            display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+            padding: "11px 16px",
+            borderRadius: 14,
+            border: `1.5px solid ${c.primary}`,
+            background: c.primarySoft,
+            color: c.primary,
+            fontFamily: "'Manrope', sans-serif",
+            fontWeight: 700, fontSize: "0.875rem",
+            cursor: locating ? "not-allowed" : "pointer",
+            transition: "opacity 0.15s",
+            opacity: locating ? 0.65 : 1,
+          }}
+        >
+          {locating
+            ? <><Loader2 size={15} className="spin" /> Acquiring GPS…</>
+            : <><LocateFixed size={15} /> Use My Current Location (GPS)</>}
+        </button>
+
+        {/* Informative explanation for PC users */}
+        <div style={{
+          background: `${c.primary}10`,
+          border: `1px solid ${c.primary}25`,
+          borderRadius: 10,
+          padding: "8px 11px",
+          fontSize: "0.72rem",
+          color: c.ink,
+          lineHeight: 1.4,
+        }}>
+          <strong style={{ color: c.primary }}>💡 On Desktop / PC:</strong> Browsers lack satellite GPS chips and estimate position using Wi-Fi / IP routing (which often points to your ISP hub). Type your exact street, colony, city or pincode below to pinpoint your true location.
+        </div>
+
+        {/* Divider */}
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <div style={{ flex: 1, height: 1, background: c.border }} />
+          <span style={{ fontSize: "0.6875rem", fontWeight: 700, color: c.inkSoft, letterSpacing: "0.05em" }}>OR SEARCH EXACT ADDRESS</span>
+          <div style={{ flex: 1, height: 1, background: c.border }} />
+        </div>
+
+        {/* Search input */}
+        <div style={{ position: "relative" }}>
+          <Search
+            size={15}
+            color={c.inkSoft}
+            style={{ position: "absolute", left: 13, top: "50%", transform: "translateY(-50%)", pointerEvents: "none" }}
+          />
+          <input
+            ref={inputRef}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search street, area, city or pincode…"
+            style={{
+              width: "100%",
+              padding: "11px 12px 11px 36px",
+              borderRadius: 12,
+              border: `1.5px solid ${c.border}`,
+              background: c.surfaceAlt,
+              color: c.ink,
+              fontSize: "0.875rem",
+              fontFamily: "'Inter', sans-serif",
+              outline: "none",
+            }}
+          />
+          {query.length > 0 && (
+            <button
+              onClick={() => { setQuery(""); setResults([]); setSearched(false); }}
+              style={{
+                position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)",
+                background: "none", border: "none", cursor: "pointer", padding: 4, color: c.inkSoft,
+              }}
+            >
+              <X size={14} />
+            </button>
+          )}
+        </div>
+
+        {/* Offline notice */}
+        {noNetwork && (
+          <div style={{
+            display: "flex", alignItems: "center", gap: 8,
+            background: c.warnSoft, borderRadius: 10, padding: "10px 12px",
+            color: c.warn, fontSize: "0.8125rem", fontWeight: 600,
+          }}>
+            <WifiOff size={14} style={{ flexShrink: 0 }} />
+            You are offline. Connect to the internet to search for a location.
+          </div>
+        )}
+
+        {/* Spinner while searching */}
+        {searching && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, color: c.inkSoft, fontSize: "0.8125rem", padding: "4px 0" }}>
+            <Loader2 size={15} className="spin" color={c.primary} />
+            Searching…
+          </div>
+        )}
+
+        {/* Results */}
+        {!searching && searched && results.length === 0 && !noNetwork && (
+          <div style={{ color: c.inkSoft, fontSize: "0.8125rem", padding: "6px 0", textAlign: "center" }}>
+            No results found. Try a different search term or pincode.
+          </div>
+        )}
+
+        {results.length > 0 && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <span style={{ fontSize: "0.6875rem", fontWeight: 800, letterSpacing: "0.05em", color: c.inkSoft }}>SEARCH RESULTS</span>
+            {results.map((r, i) => (
+              <button
+                key={i}
+                onClick={() => {
+                  onSelectLocation(r);
+                  onClose();
+                }}
+                style={{
+                  width: "100%", textAlign: "left",
+                  display: "flex", alignItems: "flex-start", gap: 10,
+                  padding: "11px 12px",
+                  borderRadius: 12,
+                  border: `1px solid ${c.border}`,
+                  background: c.surface,
+                  cursor: "pointer",
+                  transition: "background 0.12s",
+                }}
+                onMouseEnter={(e) => e.currentTarget.style.background = c.surfaceAlt}
+                onMouseLeave={(e) => e.currentTarget.style.background = c.surface}
+              >
+                <MapPin size={16} color={c.primary} style={{ flexShrink: 0, marginTop: 2 }} />
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div style={{ fontWeight: 700, fontSize: "0.8438rem", color: c.ink, lineHeight: 1.35, wordBreak: "break-word" }}>
+                    {r.label || r.displayName}
+                  </div>
+                  <div style={{ fontSize: "0.7188rem", color: c.inkSoft, marginTop: 3, lineHeight: 1.3, wordBreak: "break-word" }}>
+                    {r.displayName}
+                  </div>
+                  <div style={{ fontSize: "0.6875rem", color: c.primary, fontFamily: "monospace", marginTop: 4, fontWeight: 600 }}>
+                    📍 {r.lat.toFixed(5)}, {r.lng.toFixed(5)}
+                  </div>
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* Hint */}
+        {!searched && !searching && (
+          <div style={{ color: c.inkSoft, fontSize: "0.75rem", textAlign: "center", lineHeight: 1.5, padding: "4px 0" }}>
+            Type your street, colony, city or pincode to search real locations from OpenStreetMap.
+          </div>
+        )}
+      </div>
+    </Sheet>
+  );
+}
+
+/* =========================================================================
    HEADER / BOTTOM NAV
    ========================================================================= */
 function locationDisplayLabel(location) {
@@ -675,21 +1058,63 @@ function locationDisplayLabel(location) {
   return location.label || "Address unavailable";
 }
 
-function AppHeader({ c, t, location, locating, isOnline = true, onOpenContacts, onOpenMenu, onRefreshLocation }) {
+function AppHeader({ c, t, location, locating, isOnline = true, onOpenContacts, onOpenMenu, onRefreshLocation, onOpenLocationPicker }) {
+  const accuracy = location?.accuracy;
+  const isLowAccuracy = accuracy != null && accuracy > 100;
+  const accuracyText = accuracy != null ? `±${Math.round(accuracy)} m` : null;
+
   return (
     <div className="app-header" style={{ background: c.primary }}>
-      <button className="header-loc" onClick={onRefreshLocation} title="Use my current location">
+      <button
+        className="header-loc"
+        onClick={onOpenLocationPicker}
+        title="Tap to change location or search manually"
+        style={{ cursor: "pointer" }}
+      >
         <MapPin size={16} color={c.headerText} />
         <div className="header-loc-text">
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <span className="header-loc-label" style={{ color: "rgba(255,255,255,0.7)" }}>{t.currentLocation}</span>
-            <span style={{ fontSize: "0.58rem", fontWeight: 800, padding: "1px 5px", borderRadius: 6, background: isOnline ? "rgba(18,128,95,0.45)" : "rgba(214,40,40,0.55)", color: "#fff", letterSpacing: "0.04em" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
+            <span className="header-loc-label" style={{ color: "rgba(255,255,255,0.7)" }}>
+              {location?.source === "manual" ? "Manual" : t.currentLocation}
+            </span>
+            {/* Online / Offline */}
+            <span style={{
+              fontSize: "0.56rem", fontWeight: 800, padding: "1px 5px", borderRadius: 6,
+              background: isOnline ? "rgba(18,128,95,0.45)" : "rgba(214,40,40,0.55)",
+              color: "#fff", letterSpacing: "0.04em",
+            }}>
               {isOnline ? "● ONLINE" : "● OFFLINE"}
             </span>
+            {/* GPS accuracy badge */}
+            {!locating && accuracyText && location?.source !== "manual" && (
+              <span style={{
+                fontSize: "0.56rem", fontWeight: 800, padding: "1px 5px", borderRadius: 6,
+                background: isLowAccuracy ? "rgba(201,122,0,0.55)" : "rgba(18,128,95,0.35)",
+                color: "#fff", letterSpacing: "0.03em",
+              }}>
+                {isLowAccuracy ? "⚠ " : "✓ "}{accuracyText}
+              </span>
+            )}
           </div>
-          <span className="header-loc-value" style={{ color: c.headerText }}>{locating ? "Updating…" : locationDisplayLabel(location)}</span>
+          <span
+            className="header-loc-value"
+            style={{ color: c.headerText, fontSize: "0.8125rem", lineHeight: 1.35 }}
+          >
+            {locating ? "Updating…" : locationDisplayLabel(location)}
+          </span>
+          {/* Low accuracy nudge */}
+          {!locating && isLowAccuracy && location?.source !== "manual" && (
+            <span style={{ fontSize: "0.6rem", color: "rgba(255,200,100,0.9)", fontWeight: 600 }}>
+              Low GPS signal — tap to refine location
+            </span>
+          )}
         </div>
-        {locating ? <Loader2 size={14} className="spin" color="rgba(255,255,255,0.85)" /> : <LocateFixed size={14} color="rgba(255,255,255,0.7)" />}
+        {location?.source === "manual"
+          ? <Search size={14} color="rgba(255,255,255,0.7)" />
+          : locating
+            ? <Loader2 size={14} className="spin" color="rgba(255,255,255,0.85)" />
+            : <ChevronDown size={14} color="rgba(255,255,255,0.7)" />
+        }
       </button>
       <button className="header-mid" onClick={onOpenContacts} style={{ color: c.headerText, borderColor: "rgba(255,255,255,0.25)" }}>
         <Users size={16} />
@@ -701,6 +1126,7 @@ function AppHeader({ c, t, location, locating, isOnline = true, onOpenContacts, 
     </div>
   );
 }
+
 
 function BottomNav({ c, t, active, setActive }) {
   const items = [
@@ -928,6 +1354,261 @@ function SurvivalGuidesSheet({ c, open, onClose }) {
   );
 }
 
+/* =========================================================================
+   OFFLINE MAP CACHE SHEET
+   ========================================================================= */
+function CacheAreaSheet({
+  c,
+  open,
+  onClose,
+  location,
+  locating,
+  onRefreshLocation,
+  mapCacheStatus,
+  cachingMap,
+  mapProgress,
+  onStartCache,
+  onClearCache,
+}) {
+  const [selectedRadius, setSelectedRadius] = useState(3);
+
+  if (!open) return null;
+
+  const hasCoords = location?.lat != null && location?.lng != null;
+  const radiusOptions = [
+    { km: 1, label: "1 km", desc: "Immediate Zone" },
+    { km: 3, label: "3 km", desc: "Recommended", badge: "Default" },
+    { km: 5, label: "5 km", desc: "Wide Coverage" },
+  ];
+
+  const currentEst = hasCoords ? estimateTileCountAndSize(location.lat, location.lng, selectedRadius) : { count: 0, estMb: "0.0" };
+  const progressPercent = mapProgress?.total > 0
+    ? Math.round((mapProgress.completed / mapProgress.total) * 100)
+    : 0;
+
+  return (
+    <Sheet open={open} onClose={cachingMap ? () => {} : onClose} title="Offline Map Cache" height="88vh">
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        {/* Real Location Information Card */}
+        <div style={{ background: c.surfaceAlt, border: `1px solid ${c.border}`, borderRadius: 14, padding: "12px 14px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+            <span style={{ fontSize: "0.6875rem", fontWeight: 800, letterSpacing: "0.06em", color: c.inkSoft }}>
+              CURRENT GPS COORDINATES
+            </span>
+            <span style={{
+              fontSize: "0.6875rem", fontWeight: 700, padding: "2px 7px", borderRadius: 6,
+              background: hasCoords ? c.safeSoft : c.dangerSoft,
+              color: hasCoords ? c.safe : c.danger,
+              display: "inline-flex", alignItems: "center", gap: 4
+            }}>
+              ● {hasCoords ? "Real GPS Lock" : "Location Unavailable"}
+            </span>
+          </div>
+
+          {locating ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", color: c.inkSoft, fontSize: "0.8125rem" }}>
+              <Loader2 size={15} className="spin" color={c.primary} />
+              <span>Acquiring real-time GPS coordinates from device satellites…</span>
+            </div>
+          ) : hasCoords ? (
+            <div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "4px 8px", fontSize: "0.8125rem", marginBottom: 4 }}>
+                <div><span style={{ color: c.inkSoft }}>Lat:</span> <b style={{ color: c.ink, fontFamily: "monospace" }}>{location.lat.toFixed(6)}</b></div>
+                <div><span style={{ color: c.inkSoft }}>Lng:</span> <b style={{ color: c.ink, fontFamily: "monospace" }}>{location.lng.toFixed(6)}</b></div>
+              </div>
+              <div style={{ fontSize: "0.75rem", color: c.inkSoft, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span>Accuracy: <b style={{ color: c.ink }}>{location.accuracy ? `±${Math.round(location.accuracy)} m` : "Normal"}</b></span>
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "60%" }}>{location.label || "Live Coordinates"}</span>
+              </div>
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: "4px 0" }}>
+              <span style={{ color: c.danger, fontSize: "0.7812rem", fontWeight: 600 }}>
+                Location unavailable. Real GPS coordinates are required to calculate offline map tiles.
+              </span>
+              <button
+                className="secondary-btn small"
+                onClick={onRefreshLocation}
+                style={{ alignSelf: "flex-start", borderColor: c.primary, color: c.primary, gap: 5 }}
+              >
+                <LocateFixed size={13} />
+                <span>Retry Location</span>
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Radius Selector */}
+        <div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+            <label style={{ fontSize: "0.75rem", fontWeight: 800, letterSpacing: "0.04em", color: c.ink, fontFamily: "'Manrope', sans-serif" }}>
+              CHOOSE EMERGENCY CACHE RADIUS
+            </label>
+            <span style={{ fontSize: "0.6875rem", fontWeight: 700, color: c.primary, background: c.primarySoft, padding: "2px 6px", borderRadius: 6 }}>
+              Storage Limit: 50 MB
+            </span>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+            {radiusOptions.map((opt) => {
+              const isSelected = selectedRadius === opt.km;
+              const est = hasCoords ? estimateTileCountAndSize(location.lat, location.lng, opt.km) : null;
+              return (
+                <button
+                  key={opt.km}
+                  type="button"
+                  disabled={cachingMap}
+                  onClick={() => setSelectedRadius(opt.km)}
+                  style={{
+                    border: `1.5px solid ${isSelected ? c.primary : c.border}`,
+                    background: isSelected ? c.primarySoft : c.surface,
+                    borderRadius: 14,
+                    padding: "10px 6px",
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    gap: 3,
+                    cursor: cachingMap ? "not-allowed" : "pointer",
+                    position: "relative",
+                    transition: "all 0.15s ease",
+                  }}
+                >
+                  {opt.badge && (
+                    <span style={{
+                      position: "absolute", top: -7,
+                      background: c.primary, color: "#fff",
+                      fontSize: "0.5625rem", fontWeight: 800,
+                      padding: "1px 5px", borderRadius: 6
+                    }}>
+                      {opt.badge}
+                    </span>
+                  )}
+                  <span style={{ fontSize: "1rem", fontWeight: 800, color: isSelected ? c.primary : c.ink, fontFamily: "'Manrope', sans-serif" }}>
+                    {opt.label}
+                  </span>
+                  <span style={{ fontSize: "0.6875rem", fontWeight: 600, color: isSelected ? c.primary : c.inkSoft }}>
+                    {opt.desc}
+                  </span>
+                  <span style={{ fontSize: "0.625rem", color: c.inkSoft, marginTop: 2 }}>
+                    {est ? `~${est.count} tiles · ${est.estMb} MB` : "—"}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Offline Features Info Box */}
+        <div style={{ background: c.surface, border: `1px solid ${c.border}`, borderRadius: 14, padding: "10px 12px", fontSize: "0.7812rem", color: c.inkSoft, display: "flex", flexDirection: "column", gap: 6 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, color: c.ink, fontWeight: 700 }}>
+            <ShieldCheck size={16} color={c.safe} />
+            <span>Emergency Offline Resilience</span>
+          </div>
+          <p style={{ margin: 0, fontSize: "0.7188rem", lineHeight: 1.4 }}>
+            • Pre-caches high-resolution street tiles (zoom 13–15) for immediate navigation when mobile data and Wi-Fi are disconnected.<br />
+            • Automatically saves all nearby hospitals, fire departments, police stations, and shelters into local IndexedDB storage.<br />
+            • Offline Map Storage quota: <b>~{currentEst.estMb} MB</b> (well under 50 MB limit).
+          </p>
+        </div>
+
+        {/* Existing Cache Status Banner (if cached) */}
+        {mapCacheStatus?.isCached && (
+          <div style={{ background: c.safeSoft, border: `1px solid ${c.safe}`, borderRadius: 12, padding: "9px 12px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div>
+              <span style={{ fontSize: "0.75rem", fontWeight: 800, color: c.safe, display: "block" }}>
+                ✓ Current Area Cached Offline
+              </span>
+              <span style={{ fontSize: "0.6875rem", color: c.inkSoft }}>
+                {mapCacheStatus.meta?.cachedTiles || 0} tiles ({mapCacheStatus.meta?.radiusKm || 3} km) · {new Date(mapCacheStatus.meta?.cachedAt || Date.now()).toLocaleDateString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+              </span>
+            </div>
+            <button
+              className="secondary-btn small"
+              disabled={cachingMap}
+              onClick={onClearCache}
+              style={{ borderColor: c.danger, color: c.danger, padding: "4px 8px", fontSize: "0.6875rem" }}
+            >
+              <Trash2 size={12} />
+              <span>Clear Cache</span>
+            </button>
+          </div>
+        )}
+
+        {/* Real Progress Bar during Caching */}
+        {cachingMap && (
+          <div style={{ background: c.surfaceAlt, border: `1px solid ${c.border}`, borderRadius: 12, padding: 12 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+              <span style={{ fontSize: "0.75rem", fontWeight: 700, color: c.ink, display: "flex", alignItems: "center", gap: 6 }}>
+                <Loader2 size={14} className="spin" color={c.primary} />
+                {mapProgress?.phase === "facilities" ? "Caching emergency facilities…" : "Downloading map tiles…"}
+              </span>
+              <span style={{ fontSize: "0.75rem", fontWeight: 800, color: c.primary }}>
+                {progressPercent}%
+              </span>
+            </div>
+            {/* Progress Track */}
+            <div style={{ width: "100%", height: 7, borderRadius: 4, background: c.border, overflow: "hidden", marginBottom: 6 }}>
+              <div
+                style={{
+                  width: `${progressPercent}%`,
+                  height: "100%",
+                  background: c.primary,
+                  borderRadius: 4,
+                  transition: "width 0.2s ease",
+                }}
+              />
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.6875rem", color: c.inkSoft }}>
+              <span>Processed: <b>{mapProgress?.completed || 0} / {mapProgress?.total || 0}</b> tiles</span>
+              <span>Saved to Cache Storage</span>
+            </div>
+          </div>
+        )}
+
+        {/* Action Button */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 4 }}>
+          <button
+            className="primary-btn"
+            disabled={cachingMap || !hasCoords}
+            onClick={() => onStartCache(selectedRadius)}
+            style={{
+              background: !hasCoords || cachingMap ? c.border : c.primary,
+              color: !hasCoords || cachingMap ? c.inkSoft : "#fff",
+              height: 44,
+              fontSize: "0.875rem",
+              borderRadius: 13,
+            }}
+          >
+            {cachingMap ? (
+              <>
+                <Loader2 size={16} className="spin" />
+                <span>Downloading Offline Area ({progressPercent}%)…</span>
+              </>
+            ) : (
+              <>
+                <Download size={16} />
+                <span>
+                  {mapCacheStatus?.isCached ? `Re-cache ${selectedRadius} km Area` : `Download for Offline Use (${selectedRadius} km)`}
+                </span>
+              </>
+            )}
+          </button>
+
+          {!cachingMap && (
+            <button
+              className="text-btn"
+              onClick={onClose}
+              style={{ color: c.inkSoft, padding: "4px" }}
+            >
+              Cancel
+            </button>
+          )}
+        </div>
+      </div>
+    </Sheet>
+  );
+}
+
 function MapsScreen({
   c,
   location,
@@ -942,7 +1623,9 @@ function MapsScreen({
   cachingMap,
   mapProgress,
   onCacheAreaMap,
+  onClearMapCache,
   facilitiesCachedAt,
+  isOnline = true,
 }) {
   const [filter, setFilter] = useState("all");
   const [selected, setSelected] = useState(null);
@@ -979,27 +1662,94 @@ function MapsScreen({
       </div>
 
       {/* Offline Area Map Cache Card */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, background: c.surface, border: `1px solid ${c.border}`, padding: "8px 12px", borderRadius: 12 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: "0.7812rem" }}>
-          <MapIcon size={16} color={c.primary} />
-          <div>
-            <span style={{ fontWeight: 700, color: c.ink, display: "block" }}>
-              {mapCacheStatus?.isCached ? "Emergency Area Map Cached" : "Offline Map Cache"}
-            </span>
-            <span style={{ fontSize: "0.6875rem", color: c.inkSoft }}>
-              {cachingMap ? `Caching tiles: ${mapProgress?.loaded || 0}/${mapProgress?.total || 0}…` : mapCacheStatus?.isCached ? `${mapCacheStatus.meta?.cachedTiles || 0} local tiles stored offline` : "Cache map for offline emergency use"}
-            </span>
+      <div style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: cachingMap ? 8 : 0,
+        marginBottom: 12,
+        background: c.surface,
+        border: `1px solid ${c.border}`,
+        padding: "8px 12px",
+        borderRadius: 12
+      }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: "0.7812rem", minWidth: 0, flex: 1 }}>
+            <MapIcon size={16} color={c.primary} style={{ flexShrink: 0 }} />
+            <div style={{ minWidth: 0 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                <span style={{ fontWeight: 700, color: c.ink }}>
+                  {mapCacheStatus?.isCached ? "Emergency Area Map Cached" : "Offline Map Cache"}
+                </span>
+                {mapCacheStatus?.isCached && !cachingMap && (
+                  <button
+                    onClick={onClearMapCache}
+                    style={{
+                      background: "none",
+                      border: "none",
+                      color: c.danger,
+                      fontSize: "0.6563rem",
+                      fontWeight: 700,
+                      cursor: "pointer",
+                      padding: "0 2px",
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 2,
+                    }}
+                    title="Clear offline map cache"
+                  >
+                    <Trash2 size={10} />
+                    <span>Clear Cache</span>
+                  </button>
+                )}
+              </div>
+              <span style={{ fontSize: "0.6875rem", color: c.inkSoft, display: "block" }}>
+                {cachingMap
+                  ? `Caching tiles: ${mapProgress?.completed || 0}/${mapProgress?.total || 0} (${Math.round(((mapProgress?.completed || 0) / Math.max(1, mapProgress?.total || 1)) * 100)}%)`
+                  : mapCacheStatus?.isCached
+                  ? `${mapCacheStatus.meta?.cachedTiles || 0} tiles (${mapCacheStatus.meta?.radiusKm || 3} km) · ${(Number(mapCacheStatus.meta?.sizeBytes || 0) / (1024 * 1024)).toFixed(1)} MB`
+                  : "Cache map for offline emergency use"}
+              </span>
+            </div>
           </div>
+          <button
+            className="secondary-btn small"
+            disabled={cachingMap}
+            onClick={onCacheAreaMap}
+            style={{
+              borderColor: c.primary,
+              color: c.primary,
+              padding: "5px 10px",
+              fontSize: "0.7188rem",
+              display: "flex",
+              alignItems: "center",
+              gap: 4,
+              flexShrink: 0,
+              marginLeft: 8,
+            }}
+          >
+            {cachingMap ? (
+              <Loader2 size={12} className="spin" />
+            ) : mapCacheStatus?.isCached ? (
+              <RefreshCw size={11} />
+            ) : (
+              <Download size={12} />
+            )}
+            <span>{cachingMap ? "Caching…" : mapCacheStatus?.isCached ? "Re-cache" : "Cache Area"}</span>
+          </button>
         </div>
-        <button
-          className="secondary-btn small"
-          disabled={cachingMap || !location?.lat}
-          onClick={onCacheAreaMap}
-          style={{ borderColor: c.primary, color: c.primary, padding: "5px 10px", fontSize: "0.7188rem", display: "flex", alignItems: "center", gap: 4 }}
-        >
-          {cachingMap ? <Loader2 size={12} className="spin" /> : mapCacheStatus?.isCached ? <Check size={12} /> : <Download size={12} />}
-          <span>{cachingMap ? "Caching…" : mapCacheStatus?.isCached ? "Re-cache" : "Cache Area"}</span>
-        </button>
+
+        {cachingMap && (
+          <div style={{ width: "100%", height: 3, borderRadius: 2, background: c.border, overflow: "hidden", marginTop: 2 }}>
+            <div
+              style={{
+                width: `${Math.round(((mapProgress?.completed || 0) / Math.max(1, mapProgress?.total || 1)) * 100)}%`,
+                height: "100%",
+                background: c.primary,
+                transition: "width 0.2s ease"
+              }}
+            />
+          </div>
+        )}
       </div>
 
       {/* Offline Facilities Cache Notice */}
@@ -1071,13 +1821,23 @@ function MapsScreen({
         </button>
       </div>
 
-      <div className="leaflet-wrap" style={{ borderColor: c.border, height: 190 }}>
+      <div className="leaflet-wrap" style={{ borderColor: c.border, height: 190, position: "relative" }}>
         <MapContainer center={[location.lat, location.lng]} zoom={14} scrollWheelZoom={false} style={{ height: "100%", width: "100%" }}>
-          <TileLayer
-            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-          />
+          <OfflineTileLayer attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors' />
           <RecenterMap lat={location.lat} lng={location.lng} />
+          {mapCacheStatus?.isCached && mapCacheStatus?.meta?.lat && (
+            <Circle
+              center={[mapCacheStatus.meta.lat, mapCacheStatus.meta.lng]}
+              radius={(mapCacheStatus.meta.radiusKm || 3) * 1000}
+              pathOptions={{
+                color: c.safe,
+                fillColor: c.safe,
+                fillOpacity: 0.05,
+                weight: 1.5,
+                dashArray: "4 4",
+              }}
+            />
+          )}
           {location.accuracy && (
             <Circle
               center={[location.lat, location.lng]}
@@ -1107,6 +1867,19 @@ function MapsScreen({
             );
           })}
         </MapContainer>
+        {!isOnline && mapCacheStatus?.isCached && (
+          <div style={{
+            position: "absolute", top: 8, right: 8, zIndex: 1000,
+            background: "rgba(18, 128, 95, 0.9)", color: "#fff",
+            fontSize: "0.625rem", fontWeight: 700, padding: "3px 8px",
+            borderRadius: 12, backdropFilter: "blur(4px)",
+            display: "flex", alignItems: "center", gap: 4,
+            boxShadow: "0 2px 6px rgba(0,0,0,0.15)", pointerEvents: "none"
+          }}>
+            <CheckCircle2 size={11} />
+            <span>OFFLINE MAP READY</span>
+          </div>
+        )}
       </div>
 
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
@@ -2092,6 +2865,11 @@ export default function App() {
   ]);
   const [reports, setReports] = useState(SEED_REPORTS);
   const [facilitiesFromCache, setFacilitiesFromCache] = useState(false); // true when served from IndexedDB
+  const [mapCacheStatus, setMapCacheStatus] = useState({ isCached: false, meta: null });
+  const [cachingMap, setCachingMap] = useState(false);
+  const [mapProgress, setMapProgress] = useState({ completed: 0, total: 0, phase: "" });
+  const [cacheSheetOpen, setCacheSheetOpen] = useState(false);
+  const [locationPickerOpen, setLocationPickerOpen] = useState(false);
   const siren = useAudioSiren();
 
   const c = theme === "light" ? LIGHT : DARK;
@@ -2170,18 +2948,59 @@ export default function App() {
     };
   }, []);
 
-  // Load cached location on app start if user is authenticated
+  // On session start / login: hydrate location from IndexedDB cache.
+  // CRITICAL: If the user previously set a manual location, RESPECT it!
+  // Do NOT overwrite their manually chosen address with PC IP/Wi-Fi geolocation.
   useEffect(() => {
-    if (phone && !location) {
-      getLastKnownLocation()
-        .then((cached) => {
-          if (cached) {
-            setLocation(cached);
-            setLocationError("");
-          }
-        })
-        .catch(() => { });
+    if (!phone) return;
+
+    let cancelled = false;
+
+    async function initLocation() {
+      let cached = null;
+      try {
+        cached = await getLastKnownLocation();
+        if (cached && !cancelled) {
+          setLocation(cached);
+          setLocationError("");
+        }
+      } catch { /* ignore */ }
+
+      // If user manually selected a location, keep it! Never overwrite with PC IP/GPS
+      if (cached && cached.source === "manual") {
+        return;
+      }
+
+      // For GPS locations or initial setup, acquire fresh device GPS
+      if (cancelled) return;
+      setLocating(true);
+      try {
+        const pos = await getCurrentPosition();
+        if (cancelled) return;
+        const label = navigator.onLine ? await reverseGeocode(pos.lat, pos.lng) : null;
+        if (cancelled) return;
+        const freshLoc = {
+          lat: pos.lat,
+          lng: pos.lng,
+          accuracy: pos.accuracy,
+          timestamp: pos.timestamp,
+          label: label || null,
+          source: "gps",
+        };
+        setLocation(freshLoc);
+        setLocationError("");
+        saveLastKnownLocation(freshLoc).catch(() => {});
+      } catch (err) {
+        if (!cancelled && !cached) {
+          setLocationError(err?.message || "Couldn't get your location.");
+        }
+      } finally {
+        if (!cancelled) setLocating(false);
+      }
     }
+
+    initLocation();
+    return () => { cancelled = true; };
   }, [phone]);
   const handleLogout = async () => {
     console.log("[AUTH] Initiating sign out...");
@@ -2228,7 +3047,76 @@ export default function App() {
       }
     });
 
+    // ── Hydrate offline map status on mount ─────────────────────────────
+    getCachedMapStatus().then((status) => {
+      if (status) setMapCacheStatus(status);
+    }).catch(() => { });
+
     return () => { if (cleanupSync) cleanupSync(); };
+  }, []);
+
+  // ── Offline Map Cache Action Handlers ──────────────────────────────────
+  const handleOpenCacheModal = useCallback(async () => {
+    // If coordinates are missing, trigger real device GPS first
+    if (location?.lat == null || location?.lng == null) {
+      setLocating(true);
+      try {
+        const pos = await getCurrentPosition();
+        let label = null;
+        if (navigator.onLine) {
+          try { label = await reverseGeocode(pos.lat, pos.lng); } catch { label = null; }
+        }
+        const loc = { lat: pos.lat, lng: pos.lng, accuracy: pos.accuracy, timestamp: pos.timestamp, label, source: "gps" };
+        setLocation(loc);
+        saveLastKnownLocation(loc).catch(() => { });
+      } catch (err) {
+        setLocationError(err?.message || "Location unavailable");
+      } finally {
+        setLocating(false);
+      }
+    }
+    setCacheSheetOpen(true);
+  }, [location?.lat, location?.lng]);
+
+  const handleStartCache = useCallback(async (radiusKm = 3) => {
+    if (location?.lat == null || location?.lng == null) {
+      setLocationError("Real GPS coordinates required to cache map area.");
+      return;
+    }
+    setCachingMap(true);
+    setMapProgress({ completed: 0, total: 1, phase: "tiles" });
+    try {
+      const meta = await cacheEmergencyAreaTiles(
+        location.lat,
+        location.lng,
+        radiusKm,
+        (progress) => setMapProgress(progress)
+      );
+      setMapCacheStatus({ isCached: true, meta });
+      // Reload facilities from cache so they're immediately available
+      const { facilities: cachedFacs } = await getCachedFacilities();
+      if (cachedFacs && cachedFacs.length > 0) {
+        setFacilities(cachedFacs);
+        setFacilitiesStatus("ready");
+      }
+      setTimeout(() => {
+        setCachingMap(false);
+        setCacheSheetOpen(false);
+      }, 700);
+    } catch (err) {
+      console.error("Map caching error:", err);
+      setCachingMap(false);
+      alert(err?.message || "Failed to cache map tiles. Please check connection and try again.");
+    }
+  }, [location?.lat, location?.lng]);
+
+  const handleClearMapCache = useCallback(async () => {
+    try {
+      const res = await clearOfflineMapCache();
+      setMapCacheStatus(res);
+    } catch (err) {
+      console.warn("Failed to clear offline map cache:", err);
+    }
   }, []);
 
   // ── Persist contacts to IndexedDB whenever they change ─────────────────
@@ -2337,6 +3225,22 @@ export default function App() {
     } finally {
       setLocating(false);
     }
+  }, []);
+
+  // Manual location selection from the location picker
+  const handleManualLocationSelect = useCallback(async (result) => {
+    // result: { lat, lng, label, displayName } — all real coordinates from Nominatim
+    const loc = {
+      lat: result.lat,
+      lng: result.lng,
+      accuracy: null,
+      timestamp: Date.now(),
+      label: result.label || result.displayName || null,
+      source: "manual",
+    };
+    setLocation(loc);
+    // Persist so it survives a reload
+    saveLastKnownLocation(loc).catch(() => { });
   }, []);
 
   // Real nearby-facility lookup (OpenStreetMap Overpass) whenever we have a
@@ -2988,9 +3892,11 @@ export default function App() {
             <>
               <AppHeader
                 c={c} t={t} location={location} locating={locating}
+                isOnline={isOnline}
                 onOpenContacts={() => setContactsOpen(true)}
                 onOpenMenu={() => setMenuOpen(true)}
                 onRefreshLocation={refreshLocation}
+                onOpenLocationPicker={() => setLocationPickerOpen(true)}
               />
 
               {/* Offline Warning Banner */}
@@ -3062,6 +3968,12 @@ export default function App() {
                   weatherData={weatherData}
                   onOpenWeather={() => setWeatherOpen(true)}
                   facilitiesCachedAt={facilitiesCachedAt}
+                  mapCacheStatus={mapCacheStatus}
+                  cachingMap={cachingMap}
+                  mapProgress={mapProgress}
+                  onCacheAreaMap={handleOpenCacheModal}
+                  onClearMapCache={handleClearMapCache}
+                  isOnline={isOnline}
                 />
               )}
               {activeTab === "report" && (
@@ -3117,6 +4029,28 @@ export default function App() {
                 c={c}
                 open={survivalOpen}
                 onClose={() => setSurvivalOpen(false)}
+              />
+              <CacheAreaSheet
+                c={c}
+                open={cacheSheetOpen}
+                onClose={() => setCacheSheetOpen(false)}
+                location={location}
+                locating={locating}
+                onRefreshLocation={refreshLocation}
+                mapCacheStatus={mapCacheStatus}
+                cachingMap={cachingMap}
+                mapProgress={mapProgress}
+                onStartCache={handleStartCache}
+                onClearCache={handleClearMapCache}
+              />
+              <LocationPickerSheet
+                c={c}
+                open={locationPickerOpen}
+                onClose={() => setLocationPickerOpen(false)}
+                onSelectLocation={handleManualLocationSelect}
+                onUseGPS={refreshLocation}
+                locating={locating}
+                currentLocation={location}
               />
             </>
           )}

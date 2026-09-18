@@ -8,7 +8,7 @@
  * - Graceful offline fallbacks for emergency APIs
  */
 
-const APP_CACHE = "rakshanet-app-shell-v2";
+const APP_CACHE = "rakshanet-app-shell-v4";
 const TILE_CACHE = "rakshanet-map-tiles-v1";
 
 const CORE_ASSETS = [
@@ -78,17 +78,20 @@ self.addEventListener("fetch", (event) => {
   if (url.hostname.includes("tile.openstreetmap.org")) {
     event.respondWith(
       caches.open(TILE_CACHE).then(async (cache) => {
-        // Try cache first for fastest offline map rendering
-        const cachedResponse = await cache.match(request);
+        // Try cache first for fastest offline map rendering; normalize subdomain
+        const normalizedUrl = request.url.replace(/https:\/\/[abc]\.tile\.openstreetmap\.org/, "https://tile.openstreetmap.org");
+        const cachedResponse = (await cache.match(request)) || (await cache.match(normalizedUrl));
         if (cachedResponse) {
           // In background, revalidate if online
-          fetch(request)
-            .then((networkResponse) => {
-              if (networkResponse && networkResponse.status === 200) {
-                cache.put(request, networkResponse);
-              }
-            })
-            .catch(() => {});
+          if (navigator.onLine) {
+            fetch(request)
+              .then((networkResponse) => {
+                if (networkResponse && networkResponse.status === 200) {
+                  cache.put(normalizedUrl, networkResponse);
+                }
+              })
+              .catch(() => {});
+          }
           return cachedResponse;
         }
 
@@ -96,7 +99,7 @@ self.addEventListener("fetch", (event) => {
         return fetch(request)
           .then((networkResponse) => {
             if (networkResponse && networkResponse.status === 200) {
-              cache.put(request, networkResponse.clone());
+              cache.put(normalizedUrl, networkResponse.clone());
             }
             return networkResponse;
           })
